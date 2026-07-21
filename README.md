@@ -2,6 +2,10 @@
 
 Local LAN dashboard for **multi-subscription AI coding usage** — pace bars, red-zone banners, and a 30‑minute collector loop.
 
+![Subscription Monitor demo dashboard](docs/assets/dashboard-demo.png)
+
+*Demo data (`/?demo=1`) — no real accounts or emails.*
+
 Tracks (when credentials are available):
 
 | Card | What it meters |
@@ -24,7 +28,8 @@ Tracks (when credentials are available):
 - **Stale detection** — snapshot age &gt; 35 minutes → red badge + card chrome  
 - **Optional auth** — `SUBMON_TOKEN` for LAN  
 - **Manual overrides** — seed or force a provider when login is broken  
-- **History** — daily JSONL under `data/history/` (gitignored)
+- **History** — daily JSONL under `data/history/` (gitignored)  
+- **Demo mode** — `http://127.0.0.1:8787/?demo=1` serves sanitized fake data (good for screenshots)
 
 ---
 
@@ -49,6 +54,7 @@ python3 collect_all.py
 # serve dashboard
 python3 server.py
 # → http://127.0.0.1:8787/
+# → http://127.0.0.1:8787/?demo=1   (sanitized screenshot data)
 ```
 
 Optional token URL: `http://127.0.0.1:8787/?token=your-secret`  
@@ -61,6 +67,36 @@ Optional token URL: `http://127.0.0.1:8787/?token=your-secret`
 ```
 
 Or a systemd timer / your agent’s scheduler. The UI treats **&gt;35 minutes** since `collected_at` as stale.
+
+---
+
+## Hermes Agent (optional)
+
+You do **not** need [Hermes Agent](https://hermes-agent.nousresearch.com) to run this. Plain Python + cron is enough.
+
+This project was **built and is maintained with Hermes** as the ops layer: collectors drift when vendors change APIs, logins expire, and red-zone pacing needs a human-readable nudge. Hermes is a good fit for that maintenance loop.
+
+If you already run Hermes:
+
+| Hook | What to do |
+|------|------------|
+| **Cron** | Schedule `python collect_all.py` every 30m (or call `POST /api/collect`). Deliver only on red-zone / `login_required` / collector error if you want quiet ticks. |
+| **Env** | `HERMES_HOME` is searched for `.env`, so API keys can live in a Hermes profile without a second secrets file. |
+| **Skill** | Optional: a small skill that “check subscription dashboard, fix login_required, summarize red cards” so chat/`/skill` can re-collect and explain. |
+| **PR loop** | When a provider endpoint breaks, point Hermes at this repo + a failing `collect_all.py` log and let it patch the collector. |
+
+Example Hermes cron prompt (self-contained):
+
+```text
+Run: cd /path/to/subscription-monitor && python3 collect_all.py
+Read data/latest.json. If any provider status is login_required/error, or any
+alert level is critical/warn (red zone), summarize which cards and why in ≤8 lines.
+If everything is ok and no red alerts, reply with exactly: OK
+```
+
+Pair with `no_agent` + script if you only want exit-code / JSON gatekeeping; use the agent when you want a written brief.
+
+Standalone users: ignore this section and use system cron.
 
 ---
 
@@ -190,6 +226,9 @@ subscription-monitor/
 │   ├── gemini.py           # Code Assist
 │   └── antigravity.py      # agy / daily-cloudcode-pa
 ├── static/index.html       # dashboard
+├── docs/
+│   ├── demo-latest.json    # sanitized demo payload
+│   └── assets/             # README screenshots
 ├── data/                   # gitignored runtime (create locally)
 ├── requirements.txt
 └── .env.example
@@ -203,6 +242,7 @@ subscription-monitor/
 - Prefer `SUBMON_TOKEN` whenever binding on `0.0.0.0`.
 - Session cookies and OAuth refresh tokens are powerful — treat the host as trusted.
 - Snapshots drop collector `raw` payloads before write to reduce accidental secret leakage.
+- README screenshot uses `/?demo=1` only — never publish a capture of live `latest.json`.
 
 ---
 
@@ -235,4 +275,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Credits
 
-Built as a personal ops dashboard for juggling Cursor, Z.ai, Grok, Codex, Gemini Code Assist, and Antigravity quotas on one LAN page. PRs and tweaks welcome.
+Built as a personal ops dashboard for juggling Cursor, Z.ai, Grok, Codex, Gemini Code Assist, and Antigravity quotas on one LAN page. Maintained with [Hermes Agent](https://hermes-agent.nousresearch.com); runs fine without it. PRs and tweaks welcome.

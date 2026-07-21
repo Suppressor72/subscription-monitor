@@ -1,0 +1,187 @@
+{
+  "generated_at": "2026-07-21T18:00:00+00:00",
+  "collected_at": "2026-07-21T18:00:00+00:00",
+  "host": "demo-host",
+  "demo": true,
+  "providers": {
+    "cursor": {
+      "provider": "cursor",
+      "status": "ok",
+      "plan": "Pro",
+      "source": "demo",
+      "collected_at": "2026-07-21T18:00:00+00:00",
+      "notes": "Demo data — illustrative only",
+      "windows": [
+        {
+          "name": "Monthly Quota",
+          "kind": "monthly",
+          "pct_used": 42.0,
+          "pct_time_elapsed": 48.0,
+          "pace": "behind",
+          "resets_at": "2026-08-15T04:00:00+00:00"
+        },
+        {
+          "name": "Monthly First-Party Quota",
+          "kind": "monthly",
+          "pct_used": 55.0,
+          "pct_time_elapsed": 48.0,
+          "pace": "ahead",
+          "resets_at": "2026-08-15T04:00:00+00:00"
+        },
+        {
+          "name": "Monthly API Quota",
+          "kind": "monthly",
+          "pct_used": 8.0,
+          "pct_time_elapsed": 48.0,
+          "pace": "behind",
+          "resets_at": "2026-08-15T04:00:00+00:00"
+        }
+      ]
+    },
+    "zai": {
+      "provider": "zai",
+      "status": "ok",
+      "plan": "GLM Coding Plan (Pro)",
+      "source": "demo",
+      "collected_at": "2026-07-21T18:00:00+00:00",
+      "notes": "Demo data — illustrative only",
+      "windows": [
+        {
+          "name": "5 Hour Quota",
+          "kind": "rolling_5h",
+          "pct_used": 28.0,
+          "pct_time_elapsed": 40.0,
+          "pace": "behind",
+          "resets_at": "2026-07-21T21:00:00+00:00"
+        },
+        {
+          "name": "Monthly Tools Quota",
+          "kind": "monthly",
+          "pct_used": 12.0,
+          "pct_time_elapsed": 55.0,
+          "pace": "behind",
+          "resets_at": "2026-08-01T00:00:00+00:00"
+        }
+      ]
+    },
+    "grok": {
+      "provider": "grok",
+      "status": "ok",
+      "plan": "SuperGrok",
+      "source": "demo",
+      "collected_at": "2026-07-21T18:00:00+00:00",
+      "notes": "Demo data — illustrative only",
+      "windows": [
+        {
+          "name": "Weekly Quota",
+          "kind": "weekly",
+          "pct_used": 72.0,
+          "pct_time_elapsed": 35.0,
+          "pace": "ahead",
+          "resets_at": "2026-07-25T12:00:00+00:00"
+        },
+        {
+          "name": "Monthly Quota",
+          "kind": "monthly",
+          "pct_used": 61.0,
+          "pct_time_elapsed": 58.0,
+          "pace": "ahead",
+          "unit": "USD",
+          "used": 18.3,
+          "limit": 30.0,
+          "remaining": 11.7,
+          "resets_at": "2026-08-01T00:00:00+00:00"
+        }
+      ]
+    },
+    "chatgpt": {
+      "provider": "chatgpt",
+      "status": "ok",
+      "plan": "ChatGPT Plus",
+      "source": "demo",
+      "collected_at": "2026-07-21T18:00:00+00:00",
+      "notes": "Demo data — Codex quota only, not web chat caps",
+      "windows": [
+        {
+          "name": "Weekly Quota",
+          "kind": "weekly",
+          "pct_used": 18.0,
+          "pct_time_elapsed": 40.0,
+          "pace": "behind",
+          "resets_at": "2026-07-26T00:00:00+00:00"
+        }
+      ]
+    },
+    "antigravity": {
+      "provider": "antigravity",
+      "status": "ok",
+      "plan": "Antigravity",
+      "source": "demo",
+      "collected_at": "2026-07-21T18:00:00+00:00",
+      "notes": "Demo data — shared pools like agy /usage",
+      "windows": [
+        {
+          "name": "Gemini · 5 Hour Quota",
+          "kind": "rolling_5h",
+          "pct_used": 64.0,
+          "pct_time_elapsed": 30.0,
+          "pace": "ahead",
+          "resets_at": "2026-07-21T20:30:00+00:00"
+        },
+        {
+          "name": "Claude + GPT · 5 Hour Quota",
+          "kind": "rolling_5h",
+          "pct_used": 5.0,
+          "pct_time_elapsed": 30.0,
+          "pace": "behind",
+          "resets_at": "2026-07-21T20:30:00+00:00"
+        }
+      ]
+    },
+    "gemini": {
+      "provider": "gemini",
+      "status": "ok",
+      "plan": "Google One AI Pro",
+      "source": "demo",
+      "collected_at": "2026-07-21T18:00:00+00:00",
+      "notes": "Demo data — Code Assist request fractions",
+      "windows": [
+        {
+          "name": "Pro Latest",
+          "pct_used": 22.0,
+          "pct_time_elapsed": 50.0,
+          "pace": "behind",
+          "resets_at": "2026-07-22T00:00:00+00:00"
+        },
+        {
+          "name": "Flash Latest",
+          "pct_used": 9.0,
+          "pct_time_elapsed": 50.0,
+          "pace": "behind",
+          "resets_at": "2026-07-22T00:00:00+00:00"
+        },
+        {
+          "name": "Flash-Lite Latest",
+          "pct_used": 3.0,
+          "pct_time_elapsed": 50.0,
+          "pace": "behind",
+          "resets_at": "2026-07-22T00:00:00+00:00"
+        }
+      ]
+    }
+  },
+  "alerts": [
+    {
+      "level": "warn",
+      "provider": "grok",
+      "window": "Weekly Quota",
+      "message": "Weekly Quota in red — 72% used (red ≥ 45% = even-pace + 10pp)"
+    },
+    {
+      "level": "warn",
+      "provider": "antigravity",
+      "window": "Gemini · 5 Hour Quota",
+      "message": "Gemini · 5 Hour Quota in red — 64% used (red ≥ 40% = even-pace + 10pp)"
+    }
+  ]
+}

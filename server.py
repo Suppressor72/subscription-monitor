@@ -22,9 +22,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from collectors.common import ENV_PATH, read_snapshot  # noqa: E402
+import json  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
 
 app = FastAPI(title="Subscription Monitor", version="0.1.0")
 STATIC = ROOT / "static"
+DOCS = ROOT / "docs"
 STATIC.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
@@ -53,6 +56,33 @@ def _check_auth(
         raise HTTPException(status_code=401, detail="Invalid or missing token")
 
 
+def _demo_snapshot() -> dict:
+    """Sanitized illustrative snapshot for README screenshots / ?demo=1."""
+    path = DOCS / "demo-latest.json"
+    data = json.loads(path.read_text())
+    now = datetime.now(timezone.utc)
+    iso = now.isoformat()
+    # Keep demo "fresh" so UI never marks it stale
+    data["generated_at"] = iso
+    data["collected_at"] = iso
+    data["host"] = "demo-host"
+    data["demo"] = True
+    for p in (data.get("providers") or {}).values():
+        if isinstance(p, dict):
+            p["collected_at"] = iso
+            p["source"] = "demo"
+            # Hard scrub any accidental PII keys
+            for k in ("email", "account", "user", "project_id"):
+                p.pop(k, None)
+            notes = p.get("notes") or ""
+            if "@" in notes:
+                p["notes"] = "Demo data — illustrative only"
+            plan = p.get("plan") or ""
+            if "@" in plan:
+                p["plan"] = plan.split("·")[0].strip() or "Demo plan"
+    return data
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "service": "subscription-monitor"}
@@ -62,9 +92,12 @@ def health():
 def usage(
     request: Request,
     token: str | None = Query(None),
+    demo: int | None = Query(None),
     x_submon_token: str | None = Header(None, alias="X-Submon-Token"),
 ):
     _check_auth(request, token=token, x_submon_token=x_submon_token)
+    if demo or request.query_params.get("demo") in ("1", "true", "yes"):
+        return JSONResponse(_demo_snapshot())
     return JSONResponse(read_snapshot())
 
 
@@ -76,6 +109,8 @@ def collect_now(
 ):
     """Trigger an immediate collection (still every-30m via cron)."""
     _check_auth(request, token=token, x_submon_token=x_submon_token)
+    if request.query_params.get("demo") in ("1", "true", "yes"):
+        return JSONResponse(_demo_snapshot())
     import collect_all
 
     collect_all.main()

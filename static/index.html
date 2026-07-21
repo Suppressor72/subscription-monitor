@@ -270,8 +270,15 @@
     const qs = new URLSearchParams(location.search);
     const token = qs.get('token') || localStorage.getItem('submon_token') || '';
     if (qs.get('token')) localStorage.setItem('submon_token', qs.get('token'));
+    const DEMO = ['1', 'true', 'yes'].includes((qs.get('demo') || '').toLowerCase());
 
-    function authQS() { return token ? `?token=${encodeURIComponent(token)}` : ''; }
+    function authQS() {
+      const p = new URLSearchParams();
+      if (token) p.set('token', token);
+      if (DEMO) p.set('demo', '1');
+      const s = p.toString();
+      return s ? `?${s}` : '';
+    }
     function authHeaders() {
       const h = { 'Accept': 'application/json' };
       if (token) h['X-Submon-Token'] = token;
