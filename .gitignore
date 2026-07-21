@@ -1,0 +1,29 @@
+# Secrets & local env
+.env
+.env.*
+!.env.example
+
+# Runtime data (usage snapshots may include account-specific numbers)
+data/*.json
+!data/*.example.json
+data/history/
+data/oauth_clients.json
+
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.Python
+dist/
+build/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Subscription Monitor</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #121821;
+      --border: #243041;
+      --text: #e7eef7;
+      --muted: #8fa3b8;
+      --ok: #3dd68c;
+      --warn: #f5a524;
+      --crit: #f31260;
+      --info: #66b3ff;
+      --ahead: #f5a524;
+      --behind: #66b3ff;
+      --on_pace: #3dd68c;
+      --bar: #1c2736;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: radial-gradient(1200px 600px at 10% -10%, #152033 0%, var(--bg) 55%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline;
+      justify-content: space-between;
+      padding: 20px 24px 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    h1 { font-size: 1.25rem; margin: 0; letter-spacing: 0.02em; }
+    .meta { color: var(--muted); font-size: 0.85rem; }
+    main { padding: 20px 20px 40px; max-width: 2100px; margin: 0 auto; }
+    .alerts { display: none; } /* legacy top strip unused — per-card alerts only */
+    .card-cell {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-width: 0;
+      height: 100%; /* stretch with grid row so cards bottom-align */
+    }
+    .card-alerts {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 0 0 auto;
+      /* min-height set in JS to match tallest banner in the visual row */
+      box-sizing: border-box;
+    }
+    .card-alerts:empty {
+      /* keep layout node even when no banners */
+      display: block;
+    }
+    .card-alert {
+      border: 1px solid var(--border);
+      border-left-width: 4px;
+      background: var(--panel);
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 0.78rem;
+      line-height: 1.3;
+      color: var(--text);
+    }
+    .card-alert.critical {
+      border-left-color: var(--crit);
+      background: rgba(243, 18, 96, 0.14);
+      border-color: rgba(243, 18, 96, 0.4);
+      color: #ffb3c7;
+      font-weight: 600;
+    }
+    .card-alert.warn {
+      border-left-color: var(--crit);
+      background: rgba(243, 18, 96, 0.12);
+      border-color: rgba(243, 18, 96, 0.35);
+      color: #ffb3c7;
+      font-weight: 600;
+    }
+    .card-alert.info {
+      border-left-color: var(--info);
+      background: rgba(102, 179, 255, 0.1);
+      color: #b6d9ff;
+    }
+    .card-alert .alert-label {
+      display: block;
+      font-size: 0.68rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      opacity: 0.85;
+      margin-bottom: 2px;
+    }
+    .grid {
+      display: grid;
+      /* 5 across → with 6 cards: row1=5, row2=1 */
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+    }
+    @media (max-width: 1100px) {
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 820px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: linear-gradient(180deg, #152033 0%, var(--panel) 100%);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      min-height: 180px;
+      flex: 1 1 auto; /* fill remaining cell so card tops align under equal banners */
+      transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
+    }
+    /* Stale / failed collect — hard to miss */
+    .card.stale {
+      background: linear-gradient(180deg, #3a1520 0%, #241018 55%, #1a1014 100%);
+      border-color: #a61e3a;
+      box-shadow: 0 0 0 1px rgba(243, 18, 96, 0.35), 0 8px 28px rgba(243, 18, 96, 0.18);
+    }
+    .card.error, .card.login_required {
+      background: linear-gradient(180deg, #3a2010 0%, #241810 55%, #1a1410 100%);
+      border-color: #a66a1e;
+      box-shadow: 0 0 0 1px rgba(245, 165, 36, 0.3), 0 8px 24px rgba(245, 165, 36, 0.12);
+    }
+    .card h2 {
+      margin: 0 0 4px;
+      font-size: 1.05rem;
+      display: flex; justify-content: space-between; gap: 8px; align-items: center;
+    }
+    .badge {
+      font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em;
+      padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .badge.ok { color: var(--ok); border-color: #245c40; }
+    .badge.stub { color: var(--warn); border-color: #6a4b12; }
+    .badge.error, .badge.login_required {
+      color: #ffb020; border-color: #a66a1e; background: rgba(245, 165, 36, 0.12);
+    }
+    /* Age-stale = red (user-facing warn that data is not fresh) */
+    .badge.stale {
+      color: #fff;
+      border-color: #f31260;
+      background: #f31260;
+      font-weight: 700;
+    }
+    .stale-banner {
+      margin: 0 0 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: rgba(243, 18, 96, 0.18);
+      border: 1px solid rgba(243, 18, 96, 0.45);
+      color: #ffb3c7;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+    .plan { color: var(--muted); font-size: 0.85rem; margin-bottom: 12px; }
+    .win { margin: 12px 0 0; }
+    .win-top { display: flex; justify-content: space-between; font-size: 0.88rem; gap: 8px; }
+    /* Pace bar: green ≤ even-pace (white), yellow to +10pp of window (pink), red beyond */
+    .bar {
+      margin-top: 8px;
+      height: 12px;
+      position: relative;
+      /* room for marks to peek above/below track */
+      padding: 0;
+    }
+    .bar-track {
+      height: 100%;
+      background: var(--bar);
+      border-radius: 999px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: row;
+      align-items: stretch;
+    }
+    .bar-seg { height: 100%; flex: 0 0 auto; min-width: 0; }
+    .bar-seg.g { background: var(--ok); }
+    .bar-seg.y { background: var(--warn); }
+    .bar-seg.r { background: var(--crit); }
+    .bar-mark {
+      position: absolute;
+      top: -3px;
+      bottom: -3px;
+      width: 2px;
+      transform: translateX(-50%);
+      pointer-events: none;
+      z-index: 2;
+      border-radius: 1px;
+    }
+    .bar-mark.pace {
+      background: #fff;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.45);
+      width: 2px;
+    }
+    .bar-mark.warn {
+      background: #ff6b8a;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.35);
+      width: 2px;
+      opacity: 0.95;
+    }
+    .bar-legend {
+      display: flex; flex-wrap: wrap; gap: 10px 14px;
+      margin-top: 4px; font-size: 0.7rem; color: var(--muted);
+    }
+    .bar-legend span::before {
+      content: "";
+      display: inline-block;
+      width: 8px; height: 8px; border-radius: 2px;
+      margin-right: 5px; vertical-align: -1px;
+    }
+    .bar-legend .lg::before { background: var(--ok); }
+    .bar-legend .ly::before { background: var(--warn); }
+    .bar-legend .lr::before { background: var(--crit); }
+    .bar-legend .lp::before { background: #fff; box-shadow: inset 0 0 0 1px #666; }
+    .bar-legend .lw::before { background: #ff6b8a; }
+    .sub { color: var(--muted); font-size: 0.78rem; margin-top: 6px; }
+    .pace { font-weight: 600; text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.04em; }
+    .pace.ahead { color: var(--ahead); }
+    .pace.on_pace { color: var(--on_pace); }
+    .pace.behind { color: var(--behind); }
+    .pace.unknown { color: var(--muted); }
+    .notes { margin-top: 12px; color: var(--muted); font-size: 0.78rem; line-height: 1.35; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    button {
+      background: #1a2740; color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 0.85rem;
+    }
+    button:hover { border-color: #3d5475; }
+    .empty { color: var(--muted); font-size: 0.85rem; font-style: italic; }
+    footer {
+      color: var(--muted); font-size: 0.75rem; padding: 0 20px 24px; max-width: 2100px; margin: 0 auto;
+    }
+    code { background: #0e1520; padding: 1px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Subscription Monitor</h1>
+      <div class="meta" id="meta">Loading…</div>
+    </div>
+    <div class="actions">
+      <button id="refresh">Refresh</button>
+      <button id="collect">Collect now</button>
+    </div>
+  </header>
+  <main>
+    <div class="alerts" id="alerts"></div>
+    <div class="grid" id="cards"></div>
+  </main>
+  <footer>
+    LAN dashboard · auto-refresh 60s · collector cron every 30m ·
+    badge <span style="color:#3dd68c">ok</span> = fresh ·
+    <span style="background:#f31260;color:#fff;padding:0 5px;border-radius:4px;font-weight:700">STALE</span>
+    = collected_at &gt; 35m (card turns red) ·
+    bar: <span style="color:#3dd68c">●</span> ≤even-pace
+    <span style="color:#f5a524">●</span> ahead
+    <span style="color:#f31260">●</span> ≥even-pace+10pp of window
+    · white mark = even pace · pink mark = +10pp of full bar ·
+    card banners = <strong>red zone only</strong> (not yellow) ·
+    overrides: <code>data/manual_overrides.json</code>
+  </footer>
+  <script>
+    const qs = new URLSearchParams(location.search);
+    const token = qs.get('token') || localStorage.getItem('submon_token') || '';
+    if (qs.get('token')) localStorage.setItem('submon_token', qs.get('token'));
+
+    function authQS() { return token ? `?token=${encodeURIComponent(token)}` : ''; }
+    function authHeaders() {
+      const h = { 'Accept': 'application/json' };
+      if (token) h['X-Submon-Token'] = token;
+      return h;
+    }
+
+    const ORDER = ['cursor', 'zai', 'grok', 'chatgpt', 'antigravity', 'gemini'];
+    const LABELS = {
+      cursor: 'Cursor',
+      zai: 'Z.ai Coding',
+      grok: 'Grok / SuperGrok',
+      chatgpt: 'ChatGPT · Codex',
+      gemini: 'Google AI Pro · Gemini',
+      antigravity: 'Antigravity · agy',
+    };
+
+    /** Red mark = even-pace + this many points of the full 0–100% usage window (not × relative). */
+    const PACE_WARN_PP = 10;
+
+    /** Collector cron = 30m; treat as stale after this grace (ms). */
+    const STALE_AFTER_MS = 35 * 60 * 1000;
+
+    function clampPct(x) {
+      if (x == null || Number.isNaN(Number(x))) return null;
+      return Math.max(0, Math.min(100, Number(x)));
+    }
+
+    function ageMs(iso) {
+      if (!iso) return null;
+      const t = Date.parse(iso);
+      if (Number.isNaN(t)) return null;
+      return Date.now() - t;
+    }
+
+    function fmtAge(ms) {
+      if (ms == null || ms < 0) return '?';
+      const m = Math.floor(ms / 60000);
+      if (m < 60) return `${m}m`;
+      const h = Math.floor(m / 60);
+      const rm = m % 60;
+      if (h < 48) return rm ? `${h}h ${rm}m` : `${h}h`;
+      return `${Math.floor(h / 24)}d`;
+    }
+
+    /**
+     * Effective display status for badge + card chrome.
+     * Age-stale overrides a stored "ok" when collected_at is too old.
+     */
+    function displayStatus(p) {
+      const base = (p && p.status) || 'unknown';
+      const age = ageMs(p && p.collected_at);
+      const isAgeStale = age != null && age > STALE_AFTER_MS;
+      if (isAgeStale) {
+        return {
+          key: 'stale',
+          label: `stale ${fmtAge(age)}`,
+          ageMs: age,
+          reason: `Last collect ${fmtAge(age)} ago (limit ${STALE_AFTER_MS / 60000}m)`,
+        };
+      }
+      // Collector already marked stale without age context
+      if (base === 'stale') {
+        return { key: 'stale', label: 'stale', ageMs: age, reason: 'Collector marked stale' };
+      }
+      if (base === 'error') {
+        return { key: 'error', label: 'error', ageMs: age, reason: p.notes || 'Collector error' };
+      }
+      if (base === 'login_required') {
+        return { key: 'login_required', label: 'login required', ageMs: age, reason: p.notes || 'Login required' };
+      }
+      if (base === 'stub') {
+        return { key: 'stub', label: 'stub', ageMs: age, reason: null };
+      }
+      return { key: base, label: base, ageMs: age, reason: null };
+    }
+
+    /**
+     * Segment fill vs even-pace (white) and pace+WARN_PP (pink).
+     * Green ≤ pace; yellow pace→warn; red beyond warn. Marks are % of full window.
+     */
+    function paceSegments(pctUsed, pctTime) {
+      const used = clampPct(pctUsed) ?? 0;
+      const pace = clampPct(pctTime);
+      if (pace == null) {
+        // No cycle clock: absolute bands only
+        const g = Math.min(used, 60);
+        const y = Math.max(0, Math.min(used, 80) - 60);
+        const r = Math.max(0, used - 80);
+        return { g, y, r, pace: null, warn: null, used, redAt: 80 };
+      }
+      const warn = clampPct(pace + PACE_WARN_PP);
+      const g = Math.min(used, pace);
+      const y = Math.max(0, Math.min(used, warn) - pace);
+      const r = Math.max(0, used - warn);
+      return { g, y, r, pace, warn, used, redAt: warn };
+    }
+
+    /** True when the bar would show red (same rule as paceSegments). */
+    function isRedZone(w) {
+      const pct = clampPct(w && w.pct_used);
+      if (pct == null) return false;
+      const seg = paceSegments(pct, w.pct_time_elapsed);
+      return seg.r > 0.05;
+    }
+
+    /** Per-card messages: red-zone windows only (+ login/error from server). */
+    function cardAlerts(name, p, serverAlerts) {
+      const out = [];
+      const ds = displayStatus(p);
+      if (ds.key === 'stale') {
+        out.push({
+          level: 'critical',
+          label: 'Stale',
+          message: ds.reason || 'Data is stale — collector may have stopped',
+        });
+      } else if (ds.key === 'error' || ds.key === 'login_required') {
+        out.push({
+          level: ds.key === 'error' ? 'warn' : 'info',
+          label: ds.label,
+          message: ds.reason || p.notes || ds.label,
+        });
+      }
+
+      for (const w of (p.windows || [])) {
+        if (!isRedZone(w)) continue;
+        const pct = Number(w.pct_used);
+        const seg = paceSegments(pct, w.pct_time_elapsed);
+        const redAt = seg.redAt;
+        const label = w.name || 'usage';
+        out.push({
+          level: pct >= 90 ? 'critical' : 'warn',
+          label: 'Red zone',
+          message: redAt != null
+            ? `${label} — ${pct.toFixed(0)}% used (red ≥ ${Number(redAt).toFixed(0)}%)`
+            : `${label} — ${pct.toFixed(0)}% used`,
+        });
+      }
+
+      // Server alerts that aren't window-red duplicates (e.g. collector notes)
+      for (const a of serverAlerts || []) {
+        if (a.provider !== name) continue;
+        if (a.window) continue; // already rendered via isRedZone
+        // Avoid duping stale/error already handled
+        if (ds.key === 'stale' || ds.key === 'error' || ds.key === 'login_required') continue;
+        out.push({
+          level: a.level || 'warn',
+          label: 'Notice',
+          message: a.message,
+        });
+      }
+      return out;
+    }
+
+    function barHtml(w) {
+      const pct = w.pct_used;
+      const seg = paceSegments(pct, w.pct_time_elapsed);
+      const segs = [];
+      if (seg.g > 0.05) segs.push(`<span class="bar-seg g" style="width:${seg.g}%"></span>`);
+      if (seg.y > 0.05) segs.push(`<span class="bar-seg y" style="width:${seg.y}%"></span>`);
+      if (seg.r > 0.05) segs.push(`<span class="bar-seg r" style="width:${seg.r}%"></span>`);
+      if (!segs.length && (pct ?? 0) > 0) {
+        segs.push(`<span class="bar-seg g" style="width:1px"></span>`);
+      }
+      let marks = '';
+      if (seg.pace != null) {
+        marks += `<div class="bar-mark pace" style="left:${seg.pace}%" title="Even pace (${seg.pace.toFixed(1)}% of cycle)"></div>`;
+      }
+      if (seg.warn != null && seg.pace != null && seg.warn > seg.pace + 0.05) {
+        marks += `<div class="bar-mark warn" style="left:${seg.warn}%" title="+${PACE_WARN_PP}pp of window ahead of pace (${seg.warn.toFixed(1)}%)"></div>`;
+      }
+      return `<div class="bar">${marks}<div class="bar-track">${segs.join('')}</div></div>`;
+    }
+
+    function fmtWhen(iso) {
+      if (!iso) return '—';
+      try {
+        const d = new Date(iso);
+        return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      } catch { return iso; }
+    }
+
+    function render(data) {
+      const meta = document.getElementById('meta');
+      const snapAge = ageMs(data.generated_at);
+      meta.textContent = data.generated_at
+        ? `Last snapshot: ${fmtWhen(data.generated_at)} (${fmtAge(snapAge)} ago) · host ${data.host || '?'}`
+        : 'No snapshot yet — click Collect now';
+
+      const providers = data.providers || {};
+      const names = ORDER.filter(n => providers[n]).concat(Object.keys(providers).filter(n => !ORDER.includes(n)));
+      const serverAlerts = data.alerts || [];
+
+      // Top strip unused — keep empty
+      const alertsEl = document.getElementById('alerts');
+      if (alertsEl) alertsEl.innerHTML = '';
+
+      const cards = document.getElementById('cards');
+      cards.innerHTML = names.map(name => {
+        const p = providers[name];
+        const ds = displayStatus(p);
+        const wins = p.windows || [];
+        const winsHtml = wins.length ? wins.map(w => {
+          const pct = w.pct_used;
+          return `<div class="win">
+            <div class="win-top">
+              <span>${w.name || 'usage'}</span>
+              <span><strong>${pct == null ? '—' : Number(pct).toFixed(0) + '%'}</strong>
+                <span class="pace ${w.pace || 'unknown'}"> ${w.pace || ''}</span>
+              </span>
+            </div>
+            ${barHtml(w)}
+            <div class="sub">
+              reset ${fmtWhen(w.resets_at)}
+              ${w.pct_time_elapsed != null ? ` · cycle ${Number(w.pct_time_elapsed).toFixed(0)}% elapsed` : ''}
+              ${w.pct_time_elapsed != null && pct != null
+                ? ` · even-pace ${Number(w.pct_time_elapsed).toFixed(0)}% · red≥${Math.min(100, Number(w.pct_time_elapsed) + PACE_WARN_PP).toFixed(0)}%`
+                : ''}
+              ${w.on_demand ? ` · on-demand: ${w.on_demand}` : ''}
+              ${w.used != null && w.limit != null
+                ? (w.unit === 'USD'
+                    ? ` · $${Number(w.used).toFixed(2)} / $${Number(w.limit).toFixed(2)}${w.remaining != null ? ` ($${Number(w.remaining).toFixed(2)} left)` : ''}`
+                    : ` · ${w.used}/${w.limit}`)
+                : ''}
+            </div>
+          </div>`;
+        }).join('') : `<div class="empty">No live meter yet</div>`;
+
+        const banner = ds.key === 'stale'
+          ? `<div class="stale-banner">⚠ STALE — last update ${fmtAge(ds.ageMs)} ago (collect runs every 30m)</div>`
+          : '';
+        const collectedLine = p.collected_at
+          ? ` · collected ${fmtWhen(p.collected_at)} (${fmtAge(ds.ageMs)} ago)`
+          : '';
+
+        const calerts = cardAlerts(name, p, serverAlerts);
+        const alertsHtml = `<div class="card-alerts">${calerts.map(a =>
+              `<div class="card-alert ${a.level}"><span class="alert-label">${a.label}</span>${a.message}</div>`
+            ).join('')}</div>`;
+
+        return `<div class="card-cell">
+          ${alertsHtml}
+          <section class="card ${ds.key}">
+          <h2>
+            <span>${LABELS[name] || name}</span>
+            <span class="badge ${ds.key}" title="${ds.reason || ds.label}">${ds.label}</span>
+          </h2>
+          <div class="plan">${p.plan || ''} · source: ${p.source || '?'}${collectedLine}</div>
+          ${banner}
+          ${winsHtml}
+          ${p.notes ? `<div class="notes">${p.notes}</div>` : ''}
+        </section>
+        </div>`;
+      }).join('');
+
+      // Match banner-slot height to the tallest in each visual row so cards align
+      equalizeAlertSlots();
+      requestAnimationFrame(equalizeAlertSlots);
+    }
+
+    /** Per visual grid row: set every .card-alerts min-height to the row max. */
+    function equalizeAlertSlots() {
+      const grid = document.getElementById('cards');
+      if (!grid) return;
+      const cells = Array.from(grid.querySelectorAll('.card-cell'));
+      const slots = cells.map(c => c.querySelector('.card-alerts'));
+      // Clear previous equalization so measurement is natural content height
+      for (const s of slots) {
+        if (s) s.style.minHeight = '';
+      }
+      // Group by row using offsetTop (stable after clear)
+      const rows = new Map();
+      cells.forEach((cell, i) => {
+        const slot = slots[i];
+        if (!slot) return;
+        const top = cell.offsetTop;
+        if (!rows.has(top)) rows.set(top, []);
+        rows.get(top).push(slot);
+      });
+      for (const group of rows.values()) {
+        let maxH = 0;
+        for (const s of group) {
+          maxH = Math.max(maxH, s.scrollHeight || s.offsetHeight || 0);
+        }
+        // If nobody has a banner, leave at 0 (no empty strip)
+        if (maxH <= 0) continue;
+        for (const s of group) {
+          s.style.minHeight = `${maxH}px`;
+        }
+      }
+    }
+
+    async function load() {
+      const r = await fetch('/api/usage' + authQS(), { headers: authHeaders() });
+      if (!r.ok) {
+        document.getElementById('meta').textContent = `Error ${r.status}`;
+        return;
+      }
+      render(await r.json());
+    }
+
+    async function collect() {
+      document.getElementById('meta').textContent = 'Collecting…';
+      const r = await fetch('/api/collect' + authQS(), { method: 'POST', headers: authHeaders() });
+      if (!r.ok) {
+        document.getElementById('meta').textContent = `Collect failed ${r.status}`;
+        return;
+      }
+      render(await r.json());
+    }
+
+    document.getElementById('refresh').onclick = load;
+    document.getElementById('collect').onclick = collect;
+    load();
+    setInterval(load, 60000);
+    let _resizeTimer = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(_resizeTimer);
+      _resizeTimer = setTimeout(equalizeAlertSlots, 100);
+    });
+  </script>
+</body>
+</html>

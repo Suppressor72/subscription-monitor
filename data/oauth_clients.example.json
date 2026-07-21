@@ -1,0 +1,10 @@
+{
+  "gemini": {
+    "client_id": "from-@google/gemini-cli-core code_assist/oauth2.js",
+    "client_secret": "from-same-file"
+  },
+  "antigravity": {
+    "client_id": "from-antigravity-cockpit extension.js",
+    "client_secret": "from-same-file"
+  }
+}

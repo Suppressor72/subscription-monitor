@@ -1,0 +1,12 @@
+{
+  "cursor": {
+    "plan": "Pro",
+    "force_manual": false,
+    "notes": "Optional seed values when live collector is offline"
+  },
+  "zai": {},
+  "grok": {},
+  "chatgpt": {},
+  "gemini": {},
+  "antigravity": {}
+}
