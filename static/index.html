@@ -367,6 +367,21 @@
         </div>
       </div>
 
+      <div class="modal-section">
+        <h3>Collector</h3>
+        <div class="modal-toggle-row">
+          <span>Collect every</span>
+          <div class="modal-stepper">
+            <button class="stepper-btn" id="interval-dec">−</button>
+            <span class="stepper-val" id="interval-val">30m</span>
+            <button class="stepper-btn" id="interval-inc">+</button>
+          </div>
+        </div>
+        <div style="font-size: 0.72rem; color: var(--muted); margin-top: 4px;">
+          Applies instantly — collector restarts with new interval. 0 = disabled.
+        </div>
+      </div>
+
       <div class="modal-footer">
         <button id="settings-reset">Reset to defaults</button>
         <button id="settings-close">Done</button>
@@ -442,6 +457,40 @@
     }
 
     let settings = loadSettings();
+
+    // ── Server-side settings (collector interval) ────────────────────────
+    let serverInterval = 1800;
+
+    async function loadServerInterval() {
+      try {
+        const r = await fetch('/api/settings' + authQS(), { headers: authHeaders() });
+        if (r.ok) {
+          const d = await r.json();
+          if (d.interval_s != null) serverInterval = d.interval_s;
+        }
+      } catch { /* ignore — use default */ }
+    }
+
+    async function saveServerInterval(seconds) {
+      try {
+        const r = await fetch('/api/settings' + authQS(), {
+          method: 'POST',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ interval_s: seconds }),
+        });
+        if (r.ok) {
+          const d = await r.json();
+          if (d.interval_s != null) serverInterval = d.interval_s;
+        }
+      } catch { /* ignore */ }
+    }
+
+    function fmtInterval(seconds) {
+      if (seconds === 0) return 'Off';
+      if (seconds < 3600) return (seconds / 60) + 'm';
+      const h = seconds / 3600;
+      return Number.isInteger(h) ? h + 'h' : (seconds / 60) + 'm';
+    }
 
     function applyGridCols() {
       document.getElementById('cards').style.gridTemplateColumns =
@@ -985,6 +1034,26 @@
           equalizeAlertSlots();
         }
       };
+      // Collector interval stepper
+      const INTERVAL_OPTIONS = [0, 300, 600, 900, 1800, 3600, 7200]; // 0,5m,10m,15m,30m,1h,2h
+      const intervalVal = document.getElementById('interval-val');
+      let intervalIdx = INTERVAL_OPTIONS.indexOf(serverInterval);
+      if (intervalIdx < 0) intervalIdx = 4; // default 30m
+      intervalVal.textContent = fmtInterval(INTERVAL_OPTIONS[intervalIdx]);
+      document.getElementById('interval-dec').onclick = async () => {
+        if (intervalIdx > 0) {
+          intervalIdx--;
+          intervalVal.textContent = fmtInterval(INTERVAL_OPTIONS[intervalIdx]);
+          await saveServerInterval(INTERVAL_OPTIONS[intervalIdx]);
+        }
+      };
+      document.getElementById('interval-inc').onclick = async () => {
+        if (intervalIdx < INTERVAL_OPTIONS.length - 1) {
+          intervalIdx++;
+          intervalVal.textContent = fmtInterval(INTERVAL_OPTIONS[intervalIdx]);
+          await saveServerInterval(INTERVAL_OPTIONS[intervalIdx]);
+        }
+      };
       overlay.classList.add('open');
     }
 
@@ -1005,6 +1074,7 @@
     };
 
     load();
+    loadServerInterval();
     setInterval(load, 60000);
     let _resizeTimer = null;
     window.addEventListener('resize', () => {

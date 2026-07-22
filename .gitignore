@@ -27,3 +27,4 @@ build/
 *.swp
 .DS_Store
 Thumbs.db
+data/settings.json

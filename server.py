@@ -17,7 +17,6 @@ import os
 import re
 import sys
 import threading
-import time
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
@@ -28,7 +27,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from collectors.common import ENV_PATH, HISTORY_DIR, read_snapshot  # noqa: E402
+from collectors.common import ENV_PATH, HISTORY_DIR, DATA_DIR, read_snapshot  # noqa: E402
 import collect_all  # noqa: E402
 import json  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
@@ -36,7 +35,47 @@ from datetime import datetime, timedelta, timezone  # noqa: E402
 logger = logging.getLogger("subscription-monitor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-COLLECT_INTERVAL_S = int(os.environ.get("SUBMON_INTERVAL", "1800"))  # 30 min default
+_DEFAULT_INTERVAL = int(os.environ.get("SUBMON_INTERVAL", "1800"))  # 30 min
+_SETTINGS_PATH = DATA_DIR / "settings.json"
+
+# Mutable collector state — the background thread watches this.
+_collector_state: dict = {"interval_s": _DEFAULT_INTERVAL, "wake": threading.Event()}
+
+
+def _load_server_settings() -> dict:
+    """Load persisted server settings (survives restart)."""
+    if _SETTINGS_PATH.exists():
+        try:
+            return json.loads(_SETTINGS_PATH.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+    return {}
+
+
+def _save_server_settings(s: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _SETTINGS_PATH.write_text(json.dumps(s, indent=2) + "\n")
+
+
+def _get_interval() -> int:
+    """Current collector interval in seconds."""
+    stored = _load_server_settings().get("interval_s")
+    if stored and isinstance(stored, int) and stored >= 0:
+        return stored
+    return _DEFAULT_INTERVAL
+
+
+def _set_interval(seconds: int) -> None:
+    """Persist new interval and wake the collector thread."""
+    s = _load_server_settings()
+    s["interval_s"] = seconds
+    _save_server_settings(s)
+    _collector_state["interval_s"] = seconds
+    _collector_state["wake"].set()
+
+
+# Load persisted interval on startup
+_collector_state["interval_s"] = _get_interval()
 
 app = FastAPI(title="Subscription Monitor", version="0.2.0")
 STATIC = ROOT / "static"
@@ -169,26 +208,66 @@ def _demo_history(hours: int) -> dict:
 
 @app.on_event("startup")
 def _start_collector():
-    """Launch background collector thread — runs every SUBMON_INTERVAL_S."""
+    """Launch background collector thread."""
     t = threading.Thread(target=_collector_loop, daemon=True, name="submon-collector")
     t.start()
-    logger.info("collector thread started (interval=%ds)", COLLECT_INTERVAL_S)
+    logger.info("collector thread started (interval=%ds)", _get_interval())
 
 
 def _collector_loop() -> None:
-    """Collect immediately on startup, then every interval."""
+    """Collect immediately on startup, then every interval.
+
+    Uses a threading.Event so POST /api/settings can wake the thread
+    immediately when the interval changes — no restart needed.
+    """
     while True:
         try:
             collect_all.main()
             logger.info("collect cycle complete")
         except Exception as e:  # noqa: BLE001
             logger.error("collect cycle failed: %s", e)
-        time.sleep(COLLECT_INTERVAL_S)
+        interval = _collector_state["interval_s"]
+        if interval <= 0:
+            # Collector disabled — sleep until woken
+            _collector_state["wake"].wait()
+            _collector_state["wake"].clear()
+        else:
+            # Wait for interval, but also wake early if settings change
+            _collector_state["wake"].wait(timeout=interval)
+            _collector_state["wake"].clear()
 
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "subscription-monitor"}
+    return {"ok": True, "service": "subscription-monitor", "interval_s": _get_interval()}
+
+
+@app.get("/api/settings")
+def get_settings(
+    request: Request,
+    token: str | None = Query(None),
+    x_submon_token: str | None = Header(None, alias="X-Submon-Token"),
+):
+    _check_auth(request, token=token, x_submon_token=x_submon_token)
+    return JSONResponse({"interval_s": _get_interval()})
+
+
+@app.post("/api/settings")
+async def update_settings(
+    request: Request,
+    token: str | None = Query(None),
+    x_submon_token: str | None = Header(None, alias="X-Submon-Token"),
+):
+    """Update server-side settings. Currently supports interval_s (collector interval)."""
+    _check_auth(request, token=token, x_submon_token=x_submon_token)
+    body = await request.json()
+    interval = body.get("interval_s")
+    if interval is None or not isinstance(interval, (int, float)) or interval < 0:
+        raise HTTPException(status_code=400, detail="interval_s must be a non-negative number")
+    interval_int = int(interval)
+    _set_interval(interval_int)
+    logger.info("collector interval changed to %ds", interval_int)
+    return JSONResponse({"ok": True, "interval_s": interval_int})
 
 
 @app.get("/api/usage")
