@@ -223,7 +223,7 @@
     .pace { font-weight: 600; text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.04em; }
     .pace.ahead { color: var(--ahead); }
     .pace.on_pace { color: var(--on_pace); }
-    .pace.behind { color: var(--behind); }
+    .pace.critical { color: var(--crit); }
     .pace.unknown { color: var(--muted); }
     .notes { margin-top: 12px; color: var(--muted); font-size: 0.78rem; line-height: 1.35; }
     .spark-row {
@@ -353,6 +353,10 @@
           <span>Reset countdown badges</span>
           <div class="switch" id="toggle-countdowns"></div>
         </div>
+        <div class="modal-toggle-row">
+          <span>Pace labels (AHEAD / ON PACE / CRITICAL)</span>
+          <div class="switch" id="toggle-pacelabels"></div>
+        </div>
       </div>
 
       <div class="modal-section">
@@ -441,6 +445,7 @@
       hiddenCards: [],          // provider names to hide
       sparklines: true,         // show trend lines
       countdowns: true,         // show reset countdown badges
+      paceLabels: true,         // show AHEAD / ON PACE / CRITICAL labels
       cardsPerRow: 5,           // grid columns
     };
 
@@ -525,6 +530,12 @@
     function applyCountdownVisibility() {
       document.querySelectorAll('.reset-countdown').forEach(el => {
         el.style.display = settings.countdowns ? '' : 'none';
+      });
+    }
+
+    function applyPaceLabelVisibility() {
+      document.querySelectorAll('.pace').forEach(el => {
+        el.style.display = settings.paceLabels ? '' : 'none';
       });
     }
 
@@ -901,6 +912,7 @@
       applyGridCols();
       applyCardVisibility();
       applyCountdownVisibility();
+      applyPaceLabelVisibility();
       requestAnimationFrame(() => {
         if (settings.sparklines) drawAllSparklines();
         else applySparklineVisibility();
@@ -1023,6 +1035,15 @@
         cdSw.classList.toggle('on', settings.countdowns);
         saveSettings(settings);
         applyCountdownVisibility();
+      };
+      // Pace label toggle
+      const paceSw = document.getElementById('toggle-pacelabels');
+      paceSw.classList.toggle('on', settings.paceLabels);
+      paceSw.onclick = () => {
+        settings.paceLabels = !settings.paceLabels;
+        paceSw.classList.toggle('on', settings.paceLabels);
+        saveSettings(settings);
+        applyPaceLabelVisibility();
       };
       // Columns stepper
       const colsVal = document.getElementById('cols-val');

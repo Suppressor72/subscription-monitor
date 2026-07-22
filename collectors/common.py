@@ -252,15 +252,37 @@ def load_env_key(*names: str) -> Optional[str]:
     return None
 
 
+PACE_WARN_PP = 10.0
+
+
 def pace_status(pct_used: Optional[float], pct_time: Optional[float]) -> str:
-    """ahead | on_pace | behind | unknown relative to even burn."""
-    if pct_used is None or pct_time is None or pct_time <= 0:
+    """on_pace | ahead | critical | unknown — matches bar zone exactly.
+
+    With cycle clock:
+        used ≤ pct_time           → on_pace (green bar)
+        pct_time < used < pace+10 → ahead (yellow bar)
+        used ≥ pace+10            → critical (red bar)
+
+    Without cycle clock (absolute bands):
+        used < 60                 → on_pace
+        60 ≤ used < 80            → ahead
+        used ≥ 80                 → critical
+    """
+    if pct_used is None:
         return "unknown"
-    ratio = pct_used / pct_time
-    if ratio >= 1.25:
-        return "ahead"  # burning faster than even pace (risk)
-    if ratio <= 0.75:
-        return "behind"  # underusing this pool
+    # No cycle clock — absolute bands (match JS paceSegments fallback)
+    if pct_time is None or pct_time <= 0:
+        if pct_used >= 80:
+            return "critical"
+        if pct_used >= 60:
+            return "ahead"
+        return "on_pace"
+    # With cycle clock — same thresholds as the bar
+    warn = min(100.0, pct_time + PACE_WARN_PP)
+    if pct_used >= warn:
+        return "critical"
+    if pct_used > pct_time:
+        return "ahead"
     return "on_pace"
 
 
