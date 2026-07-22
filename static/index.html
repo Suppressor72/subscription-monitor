@@ -969,6 +969,7 @@
     }
 
     async function load() {
+      historyCache = null;  // invalidate so sparklines get fresh data
       const r = await fetch('/api/usage' + authQS(), { headers: authHeaders() });
       if (!r.ok) {
         document.getElementById('meta').textContent = `Error ${r.status}`;
@@ -987,7 +988,7 @@
       render(await r.json());
     }
 
-    document.getElementById('refresh').onclick = () => { historyCache = null; load(); };
+    document.getElementById('refresh').onclick = load;
     document.getElementById('collect').onclick = collect;
 
     // ── Settings modal ───────────────────────────────────────────────────
