@@ -389,10 +389,10 @@
     </div>
   </div>
   <footer>
-    LAN dashboard · auto-refresh 60s · collector cron every 30m ·
+    LAN dashboard · auto-refresh 60s · stale = interval + 5m ·
     badge <span style="color:#3dd68c">ok</span> = fresh ·
     <span style="background:#f31260;color:#fff;padding:0 5px;border-radius:4px;font-weight:700">STALE</span>
-    = collected_at &gt; 35m (card turns red) ·
+    = collected_at &gt; interval + 5m (card turns red) ·
     bar: <span style="color:#3dd68c">●</span> ≤even-pace
     <span style="color:#f5a524">●</span> ahead
     <span style="color:#f31260">●</span> ≥even-pace+10pp of window
@@ -432,8 +432,8 @@
     /** Red mark = even-pace + this many points of the full 0–100% usage window (not × relative). */
     const PACE_WARN_PP = 10;
 
-    /** Collector cron = 30m; treat as stale after this grace (ms). */
-    const STALE_AFTER_MS = 35 * 60 * 1000;
+    /** Stale threshold = server interval + 5m grace (updated dynamically). */
+    let STALE_AFTER_MS = 35 * 60 * 1000;
 
     // ── Settings (localStorage) ──────────────────────────────────────────
     const SETTINGS_KEY = 'submon_settings';
@@ -466,7 +466,13 @@
         const r = await fetch('/api/settings' + authQS(), { headers: authHeaders() });
         if (r.ok) {
           const d = await r.json();
-          if (d.interval_s != null) serverInterval = d.interval_s;
+          if (d.interval_s != null) {
+            serverInterval = d.interval_s;
+            // Stale = interval + 5m grace (interval 0 = disabled, use 35m fallback)
+            STALE_AFTER_MS = serverInterval > 0
+              ? (serverInterval + 300) * 1000
+              : 35 * 60 * 1000;
+          }
         }
       } catch { /* ignore — use default */ }
     }
@@ -480,7 +486,12 @@
         });
         if (r.ok) {
           const d = await r.json();
-          if (d.interval_s != null) serverInterval = d.interval_s;
+          if (d.interval_s != null) {
+            serverInterval = d.interval_s;
+            STALE_AFTER_MS = serverInterval > 0
+              ? (serverInterval + 300) * 1000
+              : 35 * 60 * 1000;
+          }
         }
       } catch { /* ignore */ }
     }
@@ -857,7 +868,7 @@
         }).join('') : `<div class="empty">No live meter yet</div>`;
 
         const banner = ds.key === 'stale'
-          ? `<div class="stale-banner">⚠ STALE — last update ${fmtAge(ds.ageMs)} ago (collect runs every 30m)</div>`
+          ? `<div class="stale-banner">⚠ STALE — last update ${fmtAge(ds.ageMs)} ago (limit ${Math.round(STALE_AFTER_MS / 60000)}m)</div>`
           : '';
         const collectedLine = p.collected_at
           ? ` · collected ${fmtWhen(p.collected_at)} (${fmtAge(ds.ageMs)} ago)`
