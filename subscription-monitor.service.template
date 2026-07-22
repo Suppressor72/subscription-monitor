@@ -1,0 +1,15 @@
+[Unit]
+Description=Subscription Monitor Dashboard (LAN :8787)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__SUBMON_DIR__
+ExecStart=__PYTHON__ server.py
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

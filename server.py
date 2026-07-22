@@ -1,16 +1,23 @@
 """
 LAN-facing Subscription Usage Dashboard.
 
-  uvicorn server:app --host 0.0.0.0 --port 8787
+  python3 server.py
 
-Auth: set SUBMON_TOKEN in env or a .env file; pass ?token=... or header X-Submon-Token.
+The server owns its own collector — a background thread runs all
+collectors every 30 minutes (configurable via SUBMON_INTERVAL env).
+No external scheduler (cron, systemd timer, Hermes) is needed.
+
+Auth: set SUBMON_TOKEN in .env; pass ?token=... or header X-Submon-Token.
 If unset, the dashboard is open (bind carefully — use a firewall / token on LAN).
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sys
+import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
@@ -22,10 +29,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from collectors.common import ENV_PATH, HISTORY_DIR, read_snapshot  # noqa: E402
+import collect_all  # noqa: E402
 import json  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
-app = FastAPI(title="Subscription Monitor", version="0.1.0")
+logger = logging.getLogger("subscription-monitor")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+COLLECT_INTERVAL_S = int(os.environ.get("SUBMON_INTERVAL", "1800"))  # 30 min default
+
+app = FastAPI(title="Subscription Monitor", version="0.2.0")
 STATIC = ROOT / "static"
 DOCS = ROOT / "docs"
 STATIC.mkdir(exist_ok=True)
@@ -154,6 +167,25 @@ def _demo_history(hours: int) -> dict:
     return pts
 
 
+@app.on_event("startup")
+def _start_collector():
+    """Launch background collector thread — runs every SUBMON_INTERVAL_S."""
+    t = threading.Thread(target=_collector_loop, daemon=True, name="submon-collector")
+    t.start()
+    logger.info("collector thread started (interval=%ds)", COLLECT_INTERVAL_S)
+
+
+def _collector_loop() -> None:
+    """Collect immediately on startup, then every interval."""
+    while True:
+        try:
+            collect_all.main()
+            logger.info("collect cycle complete")
+        except Exception as e:  # noqa: BLE001
+            logger.error("collect cycle failed: %s", e)
+        time.sleep(COLLECT_INTERVAL_S)
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "service": "subscription-monitor"}
@@ -178,7 +210,7 @@ def collect_now(
     token: str | None = Query(None),
     x_submon_token: str | None = Header(None, alias="X-Submon-Token"),
 ):
-    """Trigger an immediate collection (still every-30m via cron)."""
+    """Trigger an immediate collection (overrides the background 30m interval)."""
     _check_auth(request, token=token, x_submon_token=x_submon_token)
     if request.query_params.get("demo") in ("1", "true", "yes"):
         return JSONResponse(_demo_snapshot())
