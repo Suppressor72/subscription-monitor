@@ -692,7 +692,6 @@
             : lastVal >= 50 ? WIN_COLORS.yellow
             : WIN_COLORS.green;
           drawSparkline(canvas, vals, color);
-          if (label) label.textContent = `${vals.length} pts`;
         } else {
           if (label) label.textContent = '';
           // Clear canvas
