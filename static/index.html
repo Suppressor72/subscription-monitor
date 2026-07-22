@@ -505,12 +505,29 @@
     }
 
     /**
-     * Draw a sparkline on a canvas element.
-     * @param {HTMLCanvasElement} canvas
-     * @param {number[]} values  0-100 percentages
-     * @param {string} color
+     * Color for a point based on pace zone (same rule as pace bar).
+     * Green ≤ even-pace, yellow ahead, red ≥ pace+10pp.
+     * Falls back to absolute bands (≤60 green, ≤80 yellow, >80 red) if no clock.
      */
-    function drawSparkline(canvas, values, color) {
+    function sparkColor(pct, pctTime) {
+      const GREEN = '#3dd68c', YELLOW = '#f5a524', RED = '#f31260';
+      const used = Math.max(0, Math.min(100, pct));
+      if (pctTime == null || Number.isNaN(Number(pctTime))) {
+        return used >= 80 ? RED : used >= 60 ? YELLOW : GREEN;
+      }
+      const pace = Math.max(0, Math.min(100, pctTime));
+      const warn = Math.min(100, pace + PACE_WARN_PP);
+      if (used >= warn - 0.05) return RED;
+      if (used > pace + 0.05) return YELLOW;
+      return GREEN;
+    }
+
+    /**
+     * Draw a sparkline with per-segment coloring.
+     * @param {HTMLCanvasElement} canvas
+     * @param {{pct:number, ti:number|null}[]} points
+     */
+    function drawSparkline(canvas, points) {
       const ctx = canvas.getContext('2d');
       const dpr = window.devicePixelRatio || 1;
       const w = canvas.clientWidth || 100;
@@ -519,41 +536,45 @@
       canvas.height = h * dpr;
       ctx.scale(dpr, dpr);
       ctx.clearRect(0, 0, w, h);
-      if (!values || values.length < 2) return;
+      if (!points || points.length < 2) return;
 
       const pad = 2;
-      const stepX = (w - pad * 2) / (values.length - 1);
+      const stepX = (w - pad * 2) / (points.length - 1);
       const yFor = v => pad + (h - pad * 2) * (1 - Math.max(0, Math.min(100, v)) / 100);
 
-      // Fill
+      // Fill area under curve (subtle, single muted color)
       ctx.beginPath();
       ctx.moveTo(pad, h - pad);
-      values.forEach((v, i) => ctx.lineTo(pad + i * stepX, yFor(v)));
-      ctx.lineTo(pad + (values.length - 1) * stepX, h - pad);
+      for (const p of points) {
+        ctx.lineTo(pad + points.indexOf(p) * stepX, yFor(p.pct));
+      }
+      ctx.lineTo(pad + (points.length - 1) * stepX, h - pad);
       ctx.closePath();
-      const grad = ctx.createLinearGradient(0, 0, 0, h);
-      grad.addColorStop(0, color + '40');
-      grad.addColorStop(1, color + '05');
-      ctx.fillStyle = grad;
+      ctx.fillStyle = 'rgba(102, 179, 255, 0.06)';
       ctx.fill();
 
-      // Line
-      ctx.beginPath();
-      values.forEach((v, i) => {
-        const x = pad + i * stepX;
-        const y = yFor(v);
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      });
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
+      // Draw line segment-by-segment, colored by the segment's start-point zone
+      for (let i = 0; i < points.length - 1; i++) {
+        const p = points[i];
+        const x0 = pad + i * stepX;
+        const y0 = yFor(p.pct);
+        const x1 = pad + (i + 1) * stepX;
+        const y1 = yFor(points[i + 1].pct);
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.strokeStyle = sparkColor(p.pct, p.ti);
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
 
-      // Last-point dot
-      const lastX = pad + (values.length - 1) * stepX;
-      const lastY = yFor(values[values.length - 1]);
+      // Last-point dot colored by its own zone
+      const last = points[points.length - 1];
+      const lastX = pad + (points.length - 1) * stepX;
+      const lastY = yFor(last.pct);
       ctx.beginPath();
       ctx.arc(lastX, lastY, 2, 0, Math.PI * 2);
-      ctx.fillStyle = color;
+      ctx.fillStyle = sparkColor(last.pct, last.ti);
       ctx.fill();
     }
 
@@ -575,7 +596,12 @@
       const series = historyCache[provider];
       const vals = [];
       for (const pt of series) {
-        if (pt.w && pt.w[winName] != null) vals.push(pt.w[winName]);
+        if (pt.w && pt.w[winName] != null) {
+          const v = pt.w[winName];
+          // Support both new {pct, ti} and legacy raw-number format
+          if (typeof v === 'number') vals.push({ pct: v, ti: null });
+          else if (v && typeof v === 'object') vals.push({ pct: v.pct, ti: v.ti });
+        }
       }
       return vals.length >= 2 ? vals : null;
     }
@@ -674,27 +700,15 @@
 
     /** Walk all .spark-row elements and draw their sparklines. */
     function drawAllSparklines() {
-      const WIN_COLORS = {
-        green: '#3dd68c', yellow: '#f5a524', red: '#f31260',
-        info: '#66b3ff', default: '#66b3ff',
-      };
       document.querySelectorAll('.spark-row').forEach(row => {
         const provider = row.dataset.provider;
         const winName = row.dataset.window;
         const canvas = row.querySelector('canvas');
-        const label = row.querySelector('.spark-label');
         if (!canvas || !provider) return;
         const vals = sparklineForWindow(provider, winName);
         if (vals && vals.length >= 2) {
-          // Color by latest value's pace status
-          const lastVal = vals[vals.length - 1];
-          const color = lastVal >= 80 ? WIN_COLORS.red
-            : lastVal >= 50 ? WIN_COLORS.yellow
-            : WIN_COLORS.green;
-          drawSparkline(canvas, vals, color);
+          drawSparkline(canvas, vals);
         } else {
-          if (label) label.textContent = '';
-          // Clear canvas
           const ctx = canvas.getContext('2d');
           ctx.clearRect(0, 0, canvas.width, canvas.height);
         }

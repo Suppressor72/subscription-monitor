@@ -332,6 +332,7 @@ def write_snapshot(providers: list[dict[str, Any]]) -> Path:
                     {
                         "name": w.get("name"),
                         "pct": w.get("pct_used"),
+                        "pct_time": w.get("pct_time_elapsed"),
                         "reset": w.get("resets_at"),
                         "pace": w.get("pace"),
                     }

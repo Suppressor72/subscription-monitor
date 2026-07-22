@@ -119,7 +119,10 @@ def history(
                             wn = w.get("name")
                             pct = w.get("pct")
                             if wn is not None and pct is not None:
-                                windows[wn] = pct
+                                windows[wn] = {
+                                    "pct": pct,
+                                    "ti": w.get("pct_time"),
+                                }
                         if windows:
                             out.setdefault(pname, []).append({"t": t, "w": windows})
             except (json.JSONDecodeError, OSError):
@@ -134,16 +137,18 @@ def _demo_history(hours: int) -> dict:
     now = datetime.now(timezone.utc)
     pts: dict[str, list] = {}
     for pname, p in (base.get("providers") or {}).items():
-        windows = {w["name"]: (w.get("pct_used") or 0) for w in (p.get("windows") or [])}
+        windows = {w["name"]: (w.get("pct_used") or 0, w.get("pct_time_elapsed")) for w in (p.get("windows") or [])}
         if not windows:
             continue
         series = []
         for i in range(hours, -1, -1):
             t = (now - timedelta(hours=i)).isoformat()
             wpts = {}
-            for wn, base_pct in windows.items():
+            for wn, (base_pct, base_ti) in windows.items():
                 jitter = random.uniform(-3, 3)
-                wpts[wn] = round(max(0, min(100, base_pct - i * 1.2 + jitter)), 1)
+                pct = round(max(0, min(100, base_pct - i * 1.2 + jitter)), 1)
+                ti = round(max(0, min(100, (base_ti or 0) - i * 1.0)), 1) if base_ti else None
+                wpts[wn] = {"pct": pct, "ti": ti}
             series.append({"t": t, "w": wpts})
         pts[pname] = series
     return pts
