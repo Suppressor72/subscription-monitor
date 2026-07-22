@@ -25,7 +25,10 @@ Tracks (when credentials are available):
 
 - **Even-pace bars** — green ≤ even pace, yellow to pace+10pp, red beyond  
 - **Per-card red-zone banners** only (yellow does not spam)  
+- **Sparklines** — 48h usage trend with per-segment coloring (green/yellow/red by pace zone)  
+- **Reset countdowns** — `↻ 3d 7h` badge on each window (amber <6h, red <1h)  
 - **Stale detection** — snapshot age &gt; 35 minutes → red badge + card chrome  
+- **Self-contained** — server owns its own collector (background thread every 30m); no cron or external scheduler needed  
 - **Optional auth** — `SUBMON_TOKEN` for LAN  
 - **Manual overrides** — seed or force a provider when login is broken  
 - **History** — daily JSONL under `data/history/` (gitignored)  
@@ -40,7 +43,7 @@ git clone https://github.com/Suppressor72/subscription-monitor.git
 cd subscription-monitor
 
 python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+source .venv/bin/activate   # Windows: .venv\\Scripts\\activate
 pip install -r requirements.txt
 
 cp .env.example .env
@@ -48,10 +51,7 @@ cp .env.example .env
 
 cp data/manual_overrides.example.json data/manual_overrides.json
 
-# one-shot collect
-python3 collect_all.py
-
-# serve dashboard
+# serve dashboard (collector runs automatically every 30m in-process)
 python3 server.py
 # → http://127.0.0.1:8787/
 # → http://127.0.0.1:8787/?demo=1   (sanitized screenshot data)
@@ -60,19 +60,43 @@ python3 server.py
 Optional token URL: `http://127.0.0.1:8787/?token=your-secret`  
 (The UI stores the token in `localStorage` after the first visit.)
 
-### Cron (every 30 minutes)
+### Run as a systemd service (survives reboot)
 
-```cron
-*/30 * * * * cd /path/to/subscription-monitor && .venv/bin/python collect_all.py >> /tmp/submon-collect.log 2>&1
+The server is self-contained — it collects data every 30 minutes via an
+internal background thread. No cron or external scheduler is needed.
+For reboot persistence, install as a **systemd user service**:
+
+```bash
+# 1. Enable lingering so user services run without an active login
+loginctl enable-linger $USER
+
+# 2. Copy the template and fill in your paths
+cp subscription-monitor.service.template ~/.config/systemd/user/subscription-monitor.service
+# Edit the file: replace __SUBMON_DIR__ with your checkout path
+# and __PYTHON__ with the absolute path to your python (e.g. .venv/bin/python)
+
+# 3. Enable + start
+systemctl --user daemon-reload
+systemctl --user enable --now subscription-monitor.service
+
+# Check status / logs
+systemctl --user status subscription-monitor
+journalctl --user -u subscription-monitor -f
 ```
 
-Or a systemd timer / your agent’s scheduler. The UI treats **&gt;35 minutes** since `collected_at` as stale.
+To change the collect interval, set `SUBMON_INTERVAL` (seconds) in `.env`
+or the systemd `Environment=` line (default: `1800` = 30 min).
+
+> **Note:** standalone `collect_all.py` is still available if you prefer
+> running the collector out-of-process (cron, systemd timer, etc.). Just
+> be aware the server also collects on its own — pick one or disable the
+> internal thread by setting `SUBMON_INTERVAL=0`.
 
 ---
 
 ## Hermes Agent (optional)
 
-You do **not** need [Hermes Agent](https://hermes-agent.nousresearch.com) to run this. Plain Python + cron is enough.
+You do **not** need [Hermes Agent](https://hermes-agent.nousresearch.com) to run this. The server collects and serves on its own.
 
 This project was **built and is maintained with Hermes** as the ops layer: collectors drift when vendors change APIs, logins expire, and red-zone pacing needs a human-readable nudge. Hermes is a good fit for that maintenance loop.
 
@@ -80,23 +104,12 @@ If you already run Hermes:
 
 | Hook | What to do |
 |------|------------|
-| **Cron** | Schedule `python collect_all.py` every 30m (or call `POST /api/collect`). Deliver only on red-zone / `login_required` / collector error if you want quiet ticks. |
+| **Monitoring** | Call `GET /api/usage` periodically and alert on `login_required` / `error` / red-zone status. Or point Hermes at the dashboard URL. |
 | **Env** | `HERMES_HOME` is searched for `.env`, so API keys can live in a Hermes profile without a second secrets file. |
-| **Skill** | Optional: a small skill that “check subscription dashboard, fix login_required, summarize red cards” so chat/`/skill` can re-collect and explain. |
+| **Skill** | Optional: a small skill that "check subscription dashboard, fix login_required, summarize red cards" so chat/`/skill` can re-collect and explain. |
 | **PR loop** | When a provider endpoint breaks, point Hermes at this repo + a failing `collect_all.py` log and let it patch the collector. |
 
-Example Hermes cron prompt (self-contained):
-
-```text
-Run: cd /path/to/subscription-monitor && python3 collect_all.py
-Read data/latest.json. If any provider status is login_required/error, or any
-alert level is critical/warn (red zone), summarize which cards and why in ≤8 lines.
-If everything is ok and no red alerts, reply with exactly: OK
-```
-
-Pair with `no_agent` + script if you only want exit-code / JSON gatekeeping; use the agent when you want a written brief.
-
-Standalone users: ignore this section and use system cron.
+Standalone users: ignore this section entirely.
 
 ---
 
@@ -162,6 +175,7 @@ The public API returns one `remainingFraction` per model (the binding window). W
 |----------|---------|
 | `SUBMON_TOKEN` | Optional shared secret for UI/API |
 | `SUBMON_HOST` / `SUBMON_PORT` | Bind (default `0.0.0.0:8787`) |
+| `SUBMON_INTERVAL` | Collector interval in seconds (default `1800` = 30 min; `0` disables internal collector) |
 | `SUBMON_DATA` | Override data directory |
 | `SUBMON_ENV` | Override `.env` path |
 | `HERMES_HOME` | Also searched for `.env` (Hermes installs) |
@@ -215,21 +229,22 @@ Per-row banner slots equalize to the tallest red banner so card tops align.
 
 ```
 subscription-monitor/
-├── collect_all.py          # run all collectors → data/latest.json
-├── server.py               # FastAPI + static UI
+├── server.py                         # FastAPI + static UI + background collector
+├── collect_all.py                    # standalone collector (optional — server runs it internally)
 ├── collectors/
-│   ├── common.py           # snapshot, pace, env helpers
+│   ├── common.py                     # snapshot, pace, env helpers
 │   ├── cursor.py
 │   ├── zai.py
 │   ├── grok.py
 │   ├── chatgpt.py
-│   ├── gemini.py           # Code Assist
-│   └── antigravity.py      # agy / daily-cloudcode-pa
-├── static/index.html       # dashboard
+│   ├── gemini.py                     # Code Assist
+│   └── antigravity.py                # agy / daily-cloudcode-pa
+├── static/index.html                 # dashboard
 ├── docs/
-│   ├── demo-latest.json    # sanitized demo payload
-│   └── assets/             # README screenshots
-├── data/                   # gitignored runtime (create locally)
+│   ├── demo-latest.json              # sanitized demo payload
+│   └── assets/                       # README screenshots
+├── subscription-monitor.service.template  # systemd user service (survives reboot)
+├── data/                             # gitignored runtime (create locally)
 ├── requirements.txt
 └── .env.example
 ```
