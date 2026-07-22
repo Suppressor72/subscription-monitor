@@ -256,11 +256,64 @@
       border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 0.85rem;
     }
     button:hover { border-color: #3d5475; }
+    button.active { border-color: var(--info); background: rgba(102,179,255,0.12); }
     .empty { color: var(--muted); font-size: 0.85rem; font-style: italic; }
     footer {
       color: var(--muted); font-size: 0.75rem; padding: 0 20px 24px; max-width: 2100px; margin: 0 auto;
     }
     code { background: #0e1520; padding: 1px 5px; border-radius: 4px; }
+
+    /* Settings modal */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0; z-index: 1000;
+      background: rgba(0,0,0,0.55); backdrop-filter: blur(3px);
+      align-items: center; justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 14px; padding: 24px; width: 440px; max-width: 90vw;
+      max-height: 85vh; overflow-y: auto;
+      box-shadow: 0 12px 48px rgba(0,0,0,0.5);
+    }
+    .modal h2 { margin: 0 0 16px; font-size: 1.1rem; }
+    .modal-section { margin-bottom: 20px; }
+    .modal-section h3 {
+      margin: 0 0 8px; font-size: 0.78rem; text-transform: uppercase;
+      letter-spacing: 0.05em; color: var(--muted);
+    }
+    .modal-toggle-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 0; font-size: 0.88rem;
+    }
+    .switch {
+      position: relative; width: 38px; height: 22px; flex: 0 0 auto;
+      background: #2a3850; border-radius: 999px; cursor: pointer;
+      transition: background 0.2s;
+    }
+    .switch::after {
+      content: ''; position: absolute; top: 3px; left: 3px;
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #8fa3b8; transition: all 0.2s;
+    }
+    .switch.on { background: rgba(61, 214, 140, 0.3); }
+    .switch.on::after { left: 19px; background: var(--ok); }
+    .modal-stepper {
+      display: flex; align-items: center; gap: 12px; font-size: 0.88rem;
+    }
+    .stepper-btn {
+      width: 32px; height: 32px; border-radius: 8px;
+      background: #1a2740; border: 1px solid var(--border);
+      color: var(--text); cursor: pointer; font-size: 1rem;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .stepper-btn:hover { border-color: #3d5475; }
+    .stepper-val {
+      min-width: 40px; text-align: center; font-weight: 600; font-size: 1rem;
+    }
+    .modal-footer {
+      display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;
+    }
   </style>
 </head>
 <body>
@@ -272,12 +325,54 @@
     <div class="actions">
       <button id="refresh">Refresh</button>
       <button id="collect">Collect now</button>
+      <button id="settings-btn">⚙ Settings</button>
     </div>
   </header>
   <main>
     <div class="alerts" id="alerts"></div>
     <div class="grid" id="cards"></div>
   </main>
+
+  <!-- Settings modal -->
+  <div class="modal-overlay" id="settings-overlay">
+    <div class="modal">
+      <h2>Settings</h2>
+
+      <div class="modal-section">
+        <h3>Cards</h3>
+        <div id="card-toggles"></div>
+      </div>
+
+      <div class="modal-section">
+        <h3>Display</h3>
+        <div class="modal-toggle-row">
+          <span>Sparklines (trend lines)</span>
+          <div class="switch" id="toggle-sparklines"></div>
+        </div>
+        <div class="modal-toggle-row">
+          <span>Reset countdown badges</span>
+          <div class="switch" id="toggle-countdowns"></div>
+        </div>
+      </div>
+
+      <div class="modal-section">
+        <h3>Layout</h3>
+        <div class="modal-toggle-row">
+          <span>Cards per row</span>
+          <div class="modal-stepper">
+            <button class="stepper-btn" id="cols-dec">−</button>
+            <span class="stepper-val" id="cols-val">5</span>
+            <button class="stepper-btn" id="cols-inc">+</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button id="settings-reset">Reset to defaults</button>
+        <button id="settings-close">Done</button>
+      </div>
+    </div>
+  </div>
   <footer>
     LAN dashboard · auto-refresh 60s · collector cron every 30m ·
     badge <span style="color:#3dd68c">ok</span> = fresh ·
@@ -324,6 +419,54 @@
 
     /** Collector cron = 30m; treat as stale after this grace (ms). */
     const STALE_AFTER_MS = 35 * 60 * 1000;
+
+    // ── Settings (localStorage) ──────────────────────────────────────────
+    const SETTINGS_KEY = 'submon_settings';
+    const DEFAULT_SETTINGS = {
+      hiddenCards: [],          // provider names to hide
+      sparklines: true,         // show trend lines
+      countdowns: true,         // show reset countdown badges
+      cardsPerRow: 5,           // grid columns
+    };
+
+    function loadSettings() {
+      try {
+        const raw = localStorage.getItem(SETTINGS_KEY);
+        if (!raw) return { ...DEFAULT_SETTINGS };
+        return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+      } catch { return { ...DEFAULT_SETTINGS }; }
+    }
+
+    function saveSettings(s) {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+    }
+
+    let settings = loadSettings();
+
+    function applyGridCols() {
+      document.getElementById('cards').style.gridTemplateColumns =
+        `repeat(${settings.cardsPerRow}, minmax(0, 1fr))`;
+    }
+
+    function applyCardVisibility() {
+      document.querySelectorAll('.card-cell').forEach(cell => {
+        const name = cell.dataset.provider;
+        cell.style.display = settings.hiddenCards.includes(name) ? 'none' : '';
+      });
+    }
+
+    function applySparklineVisibility() {
+      document.querySelectorAll('.spark-row').forEach(row => {
+        row.style.display = settings.sparklines ? '' : 'none';
+      });
+      if (settings.sparklines) drawAllSparklines();
+    }
+
+    function applyCountdownVisibility() {
+      document.querySelectorAll('.reset-countdown').forEach(el => {
+        el.style.display = settings.countdowns ? '' : 'none';
+      });
+    }
 
     function clampPct(x) {
       if (x == null || Number.isNaN(Number(x))) return null;
@@ -676,7 +819,7 @@
               `<div class="card-alert ${a.level}"><span class="alert-label">${a.label}</span>${a.message}</div>`
             ).join('')}</div>`;
 
-        return `<div class="card-cell">
+        return `<div class="card-cell" data-provider="${name}">
           ${alertsHtml}
           <section class="card ${ds.key}">
           <h2>
@@ -694,8 +837,14 @@
       // Match banner-slot height to the tallest in each visual row so cards align
       equalizeAlertSlots();
       requestAnimationFrame(equalizeAlertSlots);
-      // Draw sparklines after DOM is in place
-      requestAnimationFrame(drawAllSparklines);
+      // Apply user display settings + draw sparklines after DOM is in place
+      applyGridCols();
+      applyCardVisibility();
+      applyCountdownVisibility();
+      requestAnimationFrame(() => {
+        if (settings.sparklines) drawAllSparklines();
+        else applySparklineVisibility();
+      });
     }
 
     /** Walk all .spark-row elements and draw their sparklines. */
@@ -768,6 +917,93 @@
 
     document.getElementById('refresh').onclick = () => { historyCache = null; load(); };
     document.getElementById('collect').onclick = collect;
+
+    // ── Settings modal ───────────────────────────────────────────────────
+    function openSettings() {
+      const overlay = document.getElementById('settings-overlay');
+      // Populate card toggles
+      const toggles = document.getElementById('card-toggles');
+      toggles.innerHTML = ORDER.map(name => {
+        const hidden = settings.hiddenCards.includes(name);
+        return `<div class="modal-toggle-row">
+          <span>${LABELS[name] || name}</span>
+          <div class="switch ${hidden ? '' : 'on'}" data-card="${name}"></div>
+        </div>`;
+      }).join('');
+      // Wire card toggles
+      toggles.querySelectorAll('.switch[data-card]').forEach(sw => {
+        sw.onclick = () => {
+          const name = sw.dataset.card;
+          sw.classList.toggle('on');
+          const isOn = sw.classList.contains('on');
+          if (isOn) {
+            settings.hiddenCards = settings.hiddenCards.filter(n => n !== name);
+          } else {
+            if (!settings.hiddenCards.includes(name)) settings.hiddenCards.push(name);
+          }
+          saveSettings(settings);
+          applyCardVisibility();
+          equalizeAlertSlots();
+        };
+      });
+      // Sparkline toggle
+      const sparkSw = document.getElementById('toggle-sparklines');
+      sparkSw.classList.toggle('on', settings.sparklines);
+      sparkSw.onclick = () => {
+        settings.sparklines = !settings.sparklines;
+        sparkSw.classList.toggle('on', settings.sparklines);
+        saveSettings(settings);
+        applySparklineVisibility();
+      };
+      // Countdown toggle
+      const cdSw = document.getElementById('toggle-countdowns');
+      cdSw.classList.toggle('on', settings.countdowns);
+      cdSw.onclick = () => {
+        settings.countdowns = !settings.countdowns;
+        cdSw.classList.toggle('on', settings.countdowns);
+        saveSettings(settings);
+        applyCountdownVisibility();
+      };
+      // Columns stepper
+      const colsVal = document.getElementById('cols-val');
+      colsVal.textContent = settings.cardsPerRow;
+      document.getElementById('cols-dec').onclick = () => {
+        if (settings.cardsPerRow > 1) {
+          settings.cardsPerRow--;
+          colsVal.textContent = settings.cardsPerRow;
+          saveSettings(settings);
+          applyGridCols();
+          equalizeAlertSlots();
+        }
+      };
+      document.getElementById('cols-inc').onclick = () => {
+        if (settings.cardsPerRow < 8) {
+          settings.cardsPerRow++;
+          colsVal.textContent = settings.cardsPerRow;
+          saveSettings(settings);
+          applyGridCols();
+          equalizeAlertSlots();
+        }
+      };
+      overlay.classList.add('open');
+    }
+
+    function closeSettings() {
+      document.getElementById('settings-overlay').classList.remove('open');
+    }
+
+    document.getElementById('settings-btn').onclick = openSettings;
+    document.getElementById('settings-close').onclick = closeSettings;
+    document.getElementById('settings-overlay').addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) closeSettings();
+    });
+    document.getElementById('settings-reset').onclick = () => {
+      settings = { ...DEFAULT_SETTINGS };
+      saveSettings(settings);
+      closeSettings();
+      load();
+    };
+
     load();
     setInterval(load, 60000);
     let _resizeTimer = null;
