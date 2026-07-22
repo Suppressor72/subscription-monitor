@@ -6,9 +6,13 @@ Two meters (same account, unified billing):
   2) Monthly $ limit          — via GET https://cli-chat-proxy.grok.com/v1/billing
      (cents: monthlyLimit/used).
 
-Auth: ~/.grok/auth.json (OIDC from `grok login`). Access tokens expire ~6h.
-The grok CLI refreshes them on ACP `authenticate`; we also OIDC-refresh
-ourselves when the token is near expiry so monthly HTTP does not 401.
+Auth: ~/.grok/auth.json (OIDC from `grok login`). The grok CLI refreshes
+tokens automatically during ACP `authenticate`. We NEVER refresh tokens
+ourselves — xAI rotates refresh tokens (one-time use), so independent
+OIDC refresh races with the CLI and revokes the token.
+
+Flow: ACP first (refreshes token) → re-read auth.json → monthly HTTP
+with the fresh token. If both fail, report login_required.
 """
 from __future__ import annotations
 
@@ -18,9 +22,7 @@ import subprocess
 import threading
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -36,14 +38,12 @@ from collectors.common import (
 GROK_HOME = Path.home() / ".grok"
 AUTH_PATH = GROK_HOME / "auth.json"
 MONTHLY_BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing"
-OIDC_WELL_KNOWN = "https://auth.x.ai/.well-known/openid-configuration"
 # Cold `grok agent stdio` can take 30–45s on a busy host before auth returns.
 ACP_TIMEOUT_S = 60.0
-TOKEN_SKEW = timedelta(minutes=5)
 
 
 def _val(obj: Any) -> Any:
-    """Unwrap {\"val\": N} money/amount wrappers; pass through plain values."""
+    """Unwrap {"val": N} money/amount wrappers; pass through plain values."""
     if isinstance(obj, dict) and "val" in obj and len(obj) <= 2:
         return obj.get("val")
     return obj
@@ -58,37 +58,19 @@ def _cents_to_usd(cents: Any) -> Optional[float]:
         return None
 
 
-def _parse_dt(s: Any) -> Optional[datetime]:
-    if not s or not isinstance(s, str):
-        return None
-    try:
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except ValueError:
-        return None
-
-
-def _load_auth_file() -> tuple[Optional[str], Optional[dict[str, Any]]]:
-    """Return (map_key, entry) from ~/.grok/auth.json."""
+def _load_auth() -> Optional[dict[str, Any]]:
     if not AUTH_PATH.exists():
-        return None, None
+        return None
     try:
         data = json.loads(AUTH_PATH.read_text())
     except (OSError, json.JSONDecodeError):
-        return None, None
+        return None
     if not isinstance(data, dict) or not data:
-        return None, None
-    key = next(iter(data.keys()))
-    entry = data.get(key)
+        return None
+    # Single-entry map keyed by issuer::client_id
+    entry = next(iter(data.values()))
     if not isinstance(entry, dict):
-        return None, None
-    return str(key), entry
-
-
-def _load_auth() -> Optional[dict[str, Any]]:
-    _, entry = _load_auth_file()
+        return None
     return entry
 
 
@@ -97,108 +79,6 @@ def _bearer_token(entry: dict[str, Any]) -> Optional[str]:
     if not tok:
         return None
     return str(tok)
-
-
-def _token_expired(entry: dict[str, Any], skew: timedelta = TOKEN_SKEW) -> bool:
-    exp = _parse_dt(entry.get("expires_at"))
-    if exp is None:
-        return False
-    return exp <= datetime.now(timezone.utc) + skew
-
-
-def _save_auth_entry(map_key: str, entry: dict[str, Any]) -> None:
-    try:
-        data: dict[str, Any] = {}
-        if AUTH_PATH.exists():
-            try:
-                raw = json.loads(AUTH_PATH.read_text())
-                if isinstance(raw, dict):
-                    data = raw
-            except (OSError, json.JSONDecodeError):
-                data = {}
-        data[map_key] = entry
-        AUTH_PATH.write_text(json.dumps(data, indent=2) + "\n")
-        try:
-            AUTH_PATH.chmod(0o600)
-        except OSError:
-            pass
-    except OSError:
-        pass
-
-
-def _oidc_refresh(entry: dict[str, Any], map_key: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
-    """Refresh access token via auth.x.ai. Returns (token, error)."""
-    refresh = entry.get("refresh_token")
-    client_id = entry.get("oidc_client_id")
-    if not refresh or not client_id:
-        return None, "no refresh_token/oidc_client_id in auth.json"
-
-    try:
-        with urllib.request.urlopen(OIDC_WELL_KNOWN, timeout=15) as resp:
-            oidc = json.loads(resp.read().decode())
-        token_url = oidc.get("token_endpoint") or "https://auth.x.ai/oauth2/token"
-    except Exception:
-        token_url = "https://auth.x.ai/oauth2/token"
-
-    body = urllib.parse.urlencode(
-        {
-            "grant_type": "refresh_token",
-            "refresh_token": str(refresh),
-            "client_id": str(client_id),
-        }
-    ).encode()
-    req = urllib.request.Request(
-        token_url,
-        data=body,
-        method="POST",
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "application/json",
-            "User-Agent": "hermes-submon/1.0",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            tok = json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        detail = e.read()[:240].decode(errors="replace")
-        return None, f"oidc refresh HTTP {e.code}: {detail}"
-    except Exception as e:  # noqa: BLE001
-        return None, f"oidc refresh failed: {e}"
-
-    access = tok.get("access_token")
-    if not access:
-        return None, "oidc refresh returned no access_token"
-
-    entry["key"] = access
-    if tok.get("refresh_token"):
-        entry["refresh_token"] = tok["refresh_token"]
-    expires_in = tok.get("expires_in")
-    if expires_in is not None:
-        try:
-            exp = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
-            entry["expires_at"] = exp.isoformat().replace("+00:00", "Z")
-        except (TypeError, ValueError):
-            pass
-    if map_key:
-        _save_auth_entry(map_key, entry)
-    return str(access), None
-
-
-def _ensure_bearer() -> tuple[Optional[str], Optional[dict[str, Any]], Optional[str]]:
-    """Return (token, entry, error). Refreshes via OIDC when near expiry."""
-    map_key, entry = _load_auth_file()
-    if not entry:
-        return None, None, "no auth.json"
-    token = _bearer_token(entry)
-    if token and not _token_expired(entry):
-        return token, entry, None
-    new_tok, err = _oidc_refresh(entry, map_key=map_key)
-    if new_tok:
-        return new_tok, entry, None
-    if token:
-        return token, entry, err or "using possibly expired token"
-    return None, entry, err or "no access token"
 
 
 def _fetch_monthly(token: str) -> dict[str, Any]:
@@ -220,12 +100,16 @@ def _fetch_monthly(token: str) -> dict[str, Any]:
 
 
 def _acp_request(method: str, params: Optional[dict] = None, timeout: float = ACP_TIMEOUT_S) -> dict[str, Any]:
-    """One-shot grok agent stdio JSON-RPC call (initialize → auth → method)."""
+    """One-shot grok agent stdio JSON-RPC call (initialize → auth → method).
+
+    The `authenticate` step triggers the grok CLI's own token refresh,
+    writing a fresh access_token + rotated refresh_token to auth.json.
+    """
     proc = subprocess.Popen(
         ["grok", "agent", "stdio"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
         text=True,
         bufsize=1,
     )
@@ -260,10 +144,14 @@ def _acp_request(method: str, params: Optional[dict] = None, timeout: float = AC
                 msg = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            # Ignore server notifications (no id) — they burn the queue
+            # but aren't the response we're waiting for.
             if msg.get("id") == want_id:
                 return msg
         raise TimeoutError(f"ACP response id={want_id} timed out")
 
+    # Fresh deadline per major step so cold-start notifications don't
+    # burn the whole budget.
     step = max(20.0, timeout / 3.0)
     try:
         send(
@@ -465,7 +353,7 @@ def collect() -> dict:
     if ov.get("force_manual"):
         return _from_override(ov)
 
-    map_key, entry = _load_auth_file()
+    entry = _load_auth()
     if not entry:
         if ov:
             return _from_override(ov)
@@ -483,43 +371,30 @@ def collect() -> dict:
     monthly_raw: Optional[dict] = None
     plan = entry.get("subscription_tier") or "SuperGrok / Premium+"
 
-    # 1) Fresh bearer before monthly HTTP (tokens ~6h).
-    token, entry, tok_err = _ensure_bearer()
-    if tok_err and not token:
-        errors.append(f"auth: {tok_err}")
-    elif tok_err:
-        errors.append(f"auth note: {tok_err}")
-
-    # 2) Weekly ACP (TUI /usage). CLI authenticate may also refresh disk token.
+    # 1) Weekly (ACP) first — this is the authoritative source AND triggers
+    #    the grok CLI's own token refresh (rotates refresh_token in-place).
     try:
         weekly_raw = _acp_request("_x.ai/billing")
         tier = weekly_raw.get("subscription_tier")
         if tier:
             plan = str(tier)
-        token2, entry2, _ = _ensure_bearer()
-        if token2:
-            token, entry = token2, entry2 or entry
     except FileNotFoundError:
         errors.append("`grok` CLI not on PATH")
     except Exception as e:  # noqa: BLE001
         errors.append(f"weekly: {type(e).__name__}: {e}")
 
-    # 3) Monthly $ with fresh bearer; one OIDC retry on 401.
+    # 2) Re-read auth.json AFTER ACP — the CLI may have written a fresh token.
+    entry = _load_auth() or entry
+    token = _bearer_token(entry)
+
+    # 3) Monthly $ (HTTP) with whatever token auth.json now holds.
+    #    We do NOT refresh ourselves — that races with the CLI.
     if token:
         try:
             monthly_raw = _fetch_monthly(token)
         except urllib.error.HTTPError as e:
-            if e.code == 401 and entry is not None:
-                new_tok, rerr = _oidc_refresh(entry, map_key=map_key)
-                if new_tok:
-                    try:
-                        monthly_raw = _fetch_monthly(new_tok)
-                    except urllib.error.HTTPError as e2:
-                        errors.append(f"monthly HTTP {e2.code} after refresh")
-                    except Exception as e2:  # noqa: BLE001
-                        errors.append(f"monthly: {type(e2).__name__}: {e2}")
-                else:
-                    errors.append(f"monthly HTTP 401 ({rerr or 'refresh failed'})")
+            if e.code == 401:
+                errors.append("monthly HTTP 401 — run `grok login` to refresh")
             else:
                 errors.append(f"monthly HTTP {e.code}")
         except Exception as e:  # noqa: BLE001
