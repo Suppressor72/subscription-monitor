@@ -10,6 +10,7 @@ ExecStart=__PYTHON__ server.py
 Restart=on-failure
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
+Environment=PATH=__PATH__
 
 [Install]
 WantedBy=default.target
