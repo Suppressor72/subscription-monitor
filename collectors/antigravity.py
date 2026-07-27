@@ -4,9 +4,16 @@ Matches agy TUI `/usage`:
   GEMINI MODELS — Flash + Pro share weekly + 5-hour WTUS limits
   CLAUDE AND GPT MODELS — Opus/Sonnet/GPT-OSS share the same shape
 
-Auth: ~/.antigravity_cockpit/credentials.json (cockpit OAuth client that
-works with daily-cloudcode-pa). Gemini CLI oauth_creds are a different
-product surface (Code Assist REQUESTS) — see collectors/gemini.py.
+Auth (two paths, tried in order):
+  1. ~/.antigravity_cockpit/credentials.json — Antigravity Cockpit IDE
+     extension (Cursor/VS Code). Multi-account, stores refreshToken per
+     account. Preferred when present.
+  2. GNOME keyring (Linux) / macOS keychain — the `agy` CLI stores its
+     consumer OAuth token under service='gemini', username='antigravity'.
+     Single-account, same daily-cloudcode-pa API.
+
+Gemini CLI oauth_creds are a different product surface (Code Assist
+REQUESTS) — see collectors/gemini.py.
 
 API (verified 2026-07-21):
   POST https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels
@@ -105,24 +112,23 @@ def _save_access(path: Path, email: str, access: str, expires_at_ms: int) -> Non
         pass
 
 
-def _ensure_access_token(acc: dict[str, Any], email: str, path: Path) -> str:
-    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    expire_at = int(acc.get("expireAt") or 0)
-    token = acc.get("accessToken") or ""
-    # Refresh if missing or expiring within 5 minutes
-    if token and expire_at and expire_at > now_ms + 5 * 60 * 1000:
-        return token
+def _refresh_oauth_token(
+    refresh_token: str, *, save_fn=None
+) -> tuple[str, int]:
+    """Exchange a refresh_token for a fresh access_token.
 
-    refresh = acc.get("refreshToken")
-    if not refresh:
-        raise RuntimeError("cockpit account has no refreshToken — re-login in cockpit")
+    Returns (access_token, expires_at_ms).  *save_fn* is an optional callback
+    invoked as save_fn(access, expires_at_ms) so cockpit JSON / keyring can
+    persist the refreshed token their own way.
+    """
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
     client_id, client_secret, src = resolve_oauth_client("antigravity")
     if not client_id or not client_secret:
         raise RuntimeError(
-            "Antigravity OAuth client not found — install Antigravity Cockpit, "
-            "or set ANTIGRAVITY_OAUTH_CLIENT_ID/SECRET, or data/oauth_clients.json "
-            f"(tried: {src})"
+            "Antigravity OAuth client not found — install Antigravity Cockpit "
+            "or agy CLI, or set ANTIGRAVITY_OAUTH_CLIENT_ID/SECRET, or "
+            f"data/oauth_clients.json (tried: {src})"
         )
 
     body = urllib.parse.urlencode(
@@ -130,7 +136,7 @@ def _ensure_access_token(acc: dict[str, Any], email: str, path: Path) -> str:
             "client_id": client_id,
             "client_secret": client_secret,
             "grant_type": "refresh_token",
-            "refresh_token": refresh,
+            "refresh_token": refresh_token,
         }
     ).encode()
     req = urllib.request.Request(
@@ -144,7 +150,299 @@ def _ensure_access_token(acc: dict[str, Any], email: str, path: Path) -> str:
     access = tok["access_token"]
     expires_in = int(tok.get("expires_in") or 3600)
     expires_at_ms = now_ms + expires_in * 1000
-    _save_access(path, email, access, expires_at_ms)
+    if save_fn:
+        try:
+            save_fn(access, expires_at_ms)
+        except Exception:
+            pass
+    return access, expires_at_ms
+
+
+def _ensure_access_token(acc: dict[str, Any], email: str, path: Path) -> str:
+    """Cockpit JSON path: check cached accessToken, refresh if stale."""
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    expire_at = int(acc.get("expireAt") or 0)
+    token = acc.get("accessToken") or ""
+    if token and expire_at and expire_at > now_ms + 5 * 60 * 1000:
+        return token
+
+    refresh = acc.get("refreshToken")
+    if not refresh:
+        raise RuntimeError("cockpit account has no refreshToken — re-login in cockpit")
+
+    access, expires_at_ms = _refresh_oauth_token(
+        refresh,
+        save_fn=lambda a, e: _save_access(path, email, a, e),
+    )
+    acc["accessToken"] = access
+    acc["expireAt"] = expires_at_ms
+    return access
+
+
+# ---------------------------------------------------------------------------
+# Keyring auth (agy CLI)
+# ---------------------------------------------------------------------------
+
+# Sentinel returned by _resolve_creds_source
+_COCKPIT = "cockpit"
+_KEYRING = "keyring"
+
+
+def _load_keyring_account() -> tuple[dict[str, Any], str]:
+    """Read agy CLI token from GNOME keyring / macOS keychain.
+
+    Returns (account_dict, email).  The account_dict mimics the cockpit shape:
+        {"refreshToken": ..., "accessToken": ..., "expireAt": ...}
+    so _ensure_access_token works unchanged.
+
+    Raises RuntimeError if no keyring backend is available or the entry
+    is absent.
+    """
+    raw = _read_keyring_secret()
+    if not raw:
+        raise RuntimeError("no Antigravity entry in keyring")
+    data = json.loads(raw)
+
+    token = data.get("token") or {}
+    refresh = token.get("refresh_token")
+    if not refresh:
+        raise RuntimeError("keyring token has no refresh_token — re-login via agy CLI")
+
+    access = token.get("access_token") or ""
+    expiry_str = token.get("expiry") or ""
+    expire_at_ms = 0
+    if expiry_str:
+        try:
+            dt = datetime.fromisoformat(expiry_str.replace("Z", "+00:00"))
+            expire_at_ms = int(dt.timestamp() * 1000)
+        except ValueError:
+            pass
+
+    # Try to get email from id_token JWT payload
+    email = os.environ.get("ANTIGRAVITY_EMAIL") or ""
+    if not email:
+        id_tok = data.get("id_token") or ""
+        if id_tok:
+            try:
+                import base64
+                payload = id_tok.split(".")[1]
+                payload += "=" * (-len(payload) % 4)  # pad
+                claims = json.loads(base64.urlsafe_b64decode(payload))
+                email = claims.get("email") or ""
+            except Exception:
+                pass
+
+    acc = {
+        "refreshToken": refresh,
+        "accessToken": access,
+        "expireAt": expire_at_ms,
+    }
+    return acc, email or "agy-cli"
+
+
+def _read_keyring_secret() -> str | None:
+    """Return the raw JSON string stored in the OS keyring, or None.
+
+    Strategy (tried in order):
+      1. Direct import of gi (if PyGObject is in the venv — rare)
+      2. Subprocess to system python3 (has gi on GNOME desktops)
+      3. keyring library (macOS keychain / other backends)
+    """
+    # --- Strategy 1: direct gi import (venv with PyGObject) ---
+    raw = _read_keyring_via_gi()
+    if raw:
+        return raw
+
+    # --- Strategy 2: subprocess to system python3 ---
+    raw = _read_keyring_via_subprocess()
+    if raw:
+        return raw
+
+    # --- Strategy 3: keyring library (macOS) ---
+    try:
+        import keyring  # type: ignore[import-untyped]
+
+        val = keyring.get_password("gemini", "antigravity")
+        if val:
+            return val
+    except ImportError:
+        pass
+
+    return None
+
+
+def _read_keyring_via_gi() -> str | None:
+    """Try reading keyring via PyGObject (gi) in the current process."""
+    try:
+        import gi  # type: ignore[import-untyped]
+        gi.require_version("Secret", "1")
+        from gi.repository import Secret  # type: ignore[import-untyped]
+
+        service = Secret.Service.get_sync(Secret.ServiceFlags.LOAD_COLLECTIONS, None)
+        for coll in service.get_collections():
+            coll.load_items_sync(None)
+            for item in coll.get_items():
+                attrs = item.get_attributes() or {}
+                if (
+                    attrs.get("service") == "gemini"
+                    and attrs.get("username") == "antigravity"
+                ):
+                    item.load_secret_sync(None)
+                    secret = item.get_secret()
+                    if secret:
+                        return secret.get_text()
+        return None
+    except Exception:
+        return None
+
+
+def _read_keyring_via_subprocess() -> str | None:
+    """Call system python3 (which has gi on GNOME desktops) to read keyring.
+
+    We use a small inline script that prints the secret JSON to stdout.
+    Falls back through common system python paths.
+    """
+    import subprocess
+
+    script = (
+        "import json\n"
+        "try:\n"
+        "    import gi; gi.require_version('Secret','1')\n"
+        "    from gi.repository import Secret\n"
+        "    svc = Secret.Service.get_sync(Secret.ServiceFlags.LOAD_COLLECTIONS, None)\n"
+        "    for c in svc.get_collections():\n"
+        "        c.load_items_sync(None)\n"
+        "        for it in c.get_items():\n"
+        "            a = it.get_attributes() or {}\n"
+        "            if a.get('service')=='gemini' and a.get('username')=='antigravity':\n"
+        "                it.load_secret_sync(None)\n"
+        "                s = it.get_secret()\n"
+        "                if s: print(s.get_text()); raise SystemExit(0)\n"
+        "except SystemExit: raise\n"
+        "except Exception: pass\n"
+    )
+    for py in ("/usr/bin/python3", "python3"):
+        try:
+            result = subprocess.run(
+                [py, "-c", script],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except (subprocess.SubprocessError, FileNotFoundError):
+            continue
+    return None
+
+
+def _save_keyring_access(access: str, expires_at_ms: int) -> None:
+    """Persist refreshed access_token back to keyring (best-effort)."""
+    try:
+        raw = _read_keyring_secret()
+        if not raw:
+            return
+        data = json.loads(raw)
+        token = data.get("token") or {}
+        token["access_token"] = access
+        token["expiry"] = datetime.fromtimestamp(
+            expires_at_ms / 1000, tz=timezone.utc
+        ).isoformat()
+        data["token"] = token
+
+        # Try gi direct, then subprocess
+        try:
+            import gi  # type: ignore[import-untyped]
+            gi.require_version("Secret", "1")
+            from gi.repository import Secret  # type: ignore[import-untyped]
+
+            schema = Secret.Schema.new(
+                "org.freedesktop.Secret.Generic",
+                Secret.SchemaFlags.DONT_MATCH_NAME,
+                {"service": Secret.SchemaAttributeType.STRING,
+                 "username": Secret.SchemaAttributeType.STRING},
+            )
+            Secret.password_store_sync(
+                schema,
+                {"service": "gemini", "username": "antigravity"},
+                Secret.COLLECTION_DEFAULT,
+                "Antigravity CLI token",
+                json.dumps(data),
+                None,
+            )
+            return
+        except Exception:
+            pass
+
+        # Fallback: subprocess to system python3
+        import subprocess
+        store_script = (
+            "import json, sys\n"
+            "data = json.loads(sys.stdin.read())\n"
+            "import gi; gi.require_version('Secret','1')\n"
+            "from gi.repository import Secret\n"
+            "schema = Secret.Schema.new(\n"
+            "    'org.freedesktop.Secret.Generic',\n"
+            "    Secret.SchemaFlags.DONT_MATCH_NAME,\n"
+            "    {'service': Secret.SchemaAttributeType.STRING,\n"
+            "     'username': Secret.SchemaAttributeType.STRING})\n"
+            "Secret.password_store_sync(\n"
+            "    schema, {'service':'gemini','username':'antigravity'},\n"
+            "    Secret.COLLECTION_DEFAULT, 'Antigravity CLI token',\n"
+            "    json.dumps(data), None)\n"
+        )
+        for py in ("/usr/bin/python3", "python3"):
+            try:
+                subprocess.run(
+                    [py, "-c", store_script],
+                    input=json.dumps(data),
+                    text=True,
+                    timeout=10,
+                    env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                    capture_output=True,
+                )
+                return
+            except (subprocess.SubprocessError, FileNotFoundError):
+                continue
+    except Exception:
+        pass  # best-effort; next cycle re-reads whatever agy last wrote
+
+
+def _resolve_creds() -> tuple[dict[str, Any], str, str, Any]:
+    """Try cockpit JSON first, then keyring.
+
+    Returns (account_dict, email, source_tag, opaque_path_or_obj).
+    Raises if neither source is available.
+    """
+    # Path 1: cockpit JSON
+    try:
+        acc, email, path = _load_cockpit_account()
+        return acc, email, _COCKPIT, path
+    except (FileNotFoundError, ValueError, json.JSONDecodeError):
+        pass
+
+    # Path 2: keyring (agy CLI)
+    acc, email = _load_keyring_account()
+    return acc, email, _KEYRING, None
+
+
+def _ensure_keyring_access_token(acc: dict[str, Any]) -> str:
+    """Keyring path: check cached access_token, refresh if stale."""
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    expire_at = int(acc.get("expireAt") or 0)
+    token = acc.get("accessToken") or ""
+    if token and expire_at and expire_at > now_ms + 5 * 60 * 1000:
+        return token
+
+    refresh = acc.get("refreshToken")
+    if not refresh:
+        raise RuntimeError("keyring token has no refreshToken — re-login via agy CLI")
+
+    access, expires_at_ms = _refresh_oauth_token(
+        refresh,
+        save_fn=_save_keyring_access,
+    )
     acc["accessToken"] = access
     acc["expireAt"] = expires_at_ms
     return access
@@ -319,17 +617,22 @@ def collect() -> dict[str, Any]:
         return _from_override(ov, "force_manual")
 
     try:
-        acc, email, path = _load_cockpit_account()
-    except (FileNotFoundError, ValueError, json.JSONDecodeError) as e:
+        acc, email, source_tag, opaque = _resolve_creds()
+    except Exception as e:
         return _fail(
-            f"Antigravity cockpit creds missing/invalid ({e}). "
-            "Open Antigravity Cockpit extension and sign in, or set ANTIGRAVITY_CREDS.",
+            f"Antigravity auth not found ({e}). "
+            "Install agy CLI and sign in (`agy` then follow prompts), "
+            "or open Antigravity Cockpit extension and sign in, "
+            "or set ANTIGRAVITY_CREDS.",
             status="login_required",
             ov=ov,
         )
 
     try:
-        access = _ensure_access_token(acc, email, path)
+        if source_tag == _COCKPIT:
+            access = _ensure_access_token(acc, email, opaque)
+        else:
+            access = _ensure_keyring_access_token(acc)
     except Exception as e:
         return _fail(f"Token refresh failed: {e}", status="login_required", ov=ov)
 
@@ -355,22 +658,28 @@ def collect() -> dict[str, Any]:
         if w.get("models_sample"):
             samples.append(f"{w.get('group')}: {w['models_sample']}")
 
+    auth_note = (
+        f"{email} · agy /usage groups via {endpoint.replace('https://', '')}. "
+        "Models in a group share one pool (cost-weighted). "
+    )
+    if source_tag == _KEYRING:
+        auth_note += f"[auth: agy CLI keyring] "
+    if samples:
+        auth_note += " | ".join(samples)
+
     return provider_record(
         PROVIDER,
         plan="Antigravity",
         windows=wins,
         status="ok",
         source="daily-cloudcode-pa",
-        notes=(
-            f"{email} · agy /usage groups via {endpoint.replace('https://', '')}. "
-            "Models in a group share one pool (cost-weighted). "
-            + (" | ".join(samples) if samples else "")
-        ),
+        notes=auth_note,
         raw={
             "email": email,
             "endpoint": endpoint,
             "model_count": len(models),
             "ua": _UA,
+            "auth_source": source_tag,
         },
     )
 

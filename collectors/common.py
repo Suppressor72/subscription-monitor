@@ -178,7 +178,25 @@ def _discover_gemini_oauth_client() -> tuple[Optional[str], Optional[str], str]:
 
 
 def _discover_antigravity_oauth_client() -> tuple[Optional[str], Optional[str], str]:
-    """Pull cockpit OAuth client from installed Antigravity Cockpit extension."""
+    """Pull OAuth client from agy CLI binary or Antigravity Cockpit extension.
+
+    Searches in order:
+      1. agy CLI binary (via `shutil.which`, then ~/.local/bin/agy)
+      2. Cockpit IDE extension dirs
+    """
+    import shutil
+
+    # --- agy CLI binary ---
+    agy = shutil.which("agy") or str(Path.home() / ".local" / "bin" / "agy")
+    if Path(agy).is_file():
+        try:
+            cid, csec = _extract_oauth_client_from_binary(agy)
+            if cid and csec:
+                return cid, csec, f"agy CLI binary ({agy})"
+        except Exception:
+            pass
+
+    # --- Cockpit IDE extension ---
     roots = [
         Path.home() / ".antigravity/extensions",
         Path.home() / ".config/Antigravity/extensions",
@@ -219,7 +237,54 @@ def _discover_antigravity_oauth_client() -> tuple[Optional[str], Optional[str], 
                 csec = secs[0]
             if cid and csec:
                 return cid, csec, str(p)
-    return None, None, "antigravity-cockpit not found"
+    return None, None, "antigravity not found (neither agy CLI nor Cockpit extension)"
+
+
+def _extract_oauth_client_from_binary(
+    path: str,
+) -> tuple[Optional[str], Optional[str]]:
+    """Extract OAuth client_id + client_secret from a compiled binary.
+
+    The agy CLI (Go binary) embeds these as string literals.  Standard
+    GOCSPX secrets are 35 chars: "GOCSPX-" + 28 chars of base64url.
+    """
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None, None
+
+    # Extract all client IDs
+    cids_found: list[bytes] = re.findall(
+        rb"(\d{6,}-[a-z0-9]+\.apps\.googleusercontent\.com)", data
+    )
+    cids: list[str] = [c.decode() for c in cids_found]
+
+    # Extract GOCSPX secrets — they may be concatenated without separators
+    raw = re.findall(rb"(GOCSPX-[A-Za-z0-9_-]+)", data)
+    if not raw:
+        return None, None
+
+    # GOCSPX- prefix (7) + 28-char secret body = 35 total
+    secrets: list[str] = []
+    for chunk in raw:
+        s = chunk.decode()
+        # If multiple secrets are concatenated (no null between them),
+        # split on the known prefix pattern
+        parts = re.findall(r"GOCSPX-[A-Za-z0-9_-]{28}", s)
+        if parts:
+            secrets.extend(parts)
+        elif s != "GOCSPX-":
+            # Take what we have (might be incomplete but worth trying)
+            secrets.append(s)
+
+    # Prefer the known Antigravity/cockpit client ID prefix
+    cockpit_cids = [c for c in cids if c.startswith("1071006060591")]
+    if cockpit_cids and secrets:
+        return cockpit_cids[0], secrets[0]
+    if cids and secrets:
+        return cids[0], secrets[0]
+    return None, None
 
 
 def utcnow() -> datetime:
