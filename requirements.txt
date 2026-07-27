@@ -2,3 +2,5 @@ fastapi>=0.110
 uvicorn[standard]>=0.27
 # Optional: read Cursor session cookie from Chrome Cookies DB
 browser-cookie3>=0.19
+# Antigravity: agy CLI OAuth token from GNOME keyring
+keyring>=25.0
