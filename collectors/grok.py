@@ -13,6 +13,10 @@ OIDC refresh races with the CLI and revokes the token.
 
 Flow: ACP first (refreshes token) → re-read auth.json → monthly HTTP
 with the fresh token. If both fail, report login_required.
+
+Banked usage-limit resets (read-only awareness):
+  POST https://grok.com/prod_mc_billing.ConsumerUiSvc/GetRemainingResets
+  (grpc-web empty message, same CLI bearer). Never calls RedeemReset.
 """
 from __future__ import annotations
 
@@ -23,10 +27,12 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from collectors.common import (
+    banked_resets_record,
     cycle_fraction,
     iso,
     pace_status,
@@ -38,6 +44,7 @@ from collectors.common import (
 GROK_HOME = Path.home() / ".grok"
 AUTH_PATH = GROK_HOME / "auth.json"
 MONTHLY_BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing"
+REMAINING_RESETS_URL = "https://grok.com/prod_mc_billing.ConsumerUiSvc/GetRemainingResets"
 # Cold `grok agent stdio` can take 30–45s on a busy host before auth returns.
 ACP_TIMEOUT_S = 60.0
 
@@ -97,6 +104,147 @@ def _fetch_monthly(token: str) -> dict[str, Any]:
     )
     with urllib.request.urlopen(req, timeout=20) as resp:
         return json.loads(resp.read().decode())
+
+
+def _decode_varint(buf: bytes, pos: int) -> tuple[int, int]:
+    shift = 0
+    n = 0
+    while pos < len(buf):
+        b = buf[pos]
+        pos += 1
+        n |= (b & 0x7F) << shift
+        if not (b & 0x80):
+            return n, pos
+        shift += 7
+        if shift > 63:
+            break
+    return n, pos
+
+
+def _unwrap_grpc_web(buf: bytes) -> bytes:
+    if len(buf) < 5:
+        return buf
+    flag = buf[0]
+    n = int.from_bytes(buf[1:5], "big")
+    if (flag & 0x7F) == 0 and 5 + n <= len(buf):
+        return buf[5 : 5 + n]
+    return buf
+
+
+def _parse_protobuf_timestamp(buf: bytes) -> Optional[datetime]:
+    pos = 0
+    seconds: Optional[int] = None
+    while pos < len(buf):
+        tag, pos = _decode_varint(buf, pos)
+        field, wire = tag >> 3, tag & 7
+        if wire == 0:
+            val, pos = _decode_varint(buf, pos)
+            if field == 1:
+                seconds = val
+        elif wire == 2:
+            ln, pos = _decode_varint(buf, pos)
+            pos += ln
+        elif wire == 1:
+            pos += 8
+        elif wire == 5:
+            pos += 4
+        else:
+            break
+    if seconds is None:
+        return None
+    try:
+        return datetime.fromtimestamp(int(seconds), tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _parse_reset_token_msg(buf: bytes) -> Optional[dict[str, Any]]:
+    """Parse one ConsumerUiSvc reset token. Token IDs are discarded."""
+    pos = 0
+    token_ok = False
+    granted: Optional[datetime] = None
+    expires: Optional[datetime] = None
+    while pos < len(buf):
+        tag, pos = _decode_varint(buf, pos)
+        field, wire = tag >> 3, tag & 7
+        if wire == 2:
+            ln, pos = _decode_varint(buf, pos)
+            chunk = buf[pos : pos + ln]
+            pos += ln
+            if field == 10:
+                try:
+                    s = chunk.decode("utf-8")
+                except UnicodeDecodeError:
+                    s = ""
+                if 4 <= len(s) < 200:
+                    token_ok = True
+            elif field == 20:
+                granted = _parse_protobuf_timestamp(chunk)
+            elif field == 30:
+                expires = _parse_protobuf_timestamp(chunk)
+        elif wire == 0:
+            _, pos = _decode_varint(buf, pos)
+        elif wire == 1:
+            pos += 8
+        elif wire == 5:
+            pos += 4
+        else:
+            break
+    if not token_ok:
+        return None
+    return {
+        "status": "available",
+        "granted_at": iso(granted) if granted else None,
+        "expires_at": iso(expires) if expires else None,
+    }
+
+
+def parse_remaining_resets(buf: bytes) -> dict[str, Any]:
+    payload = _unwrap_grpc_web(buf)
+    items: list[dict[str, Any]] = []
+    pos = 0
+    while pos < len(payload):
+        tag, pos = _decode_varint(payload, pos)
+        field, wire = tag >> 3, tag & 7
+        if wire == 2:
+            ln, pos = _decode_varint(payload, pos)
+            chunk = payload[pos : pos + ln]
+            pos += ln
+            if field in (1, 10):
+                tok = _parse_reset_token_msg(chunk)
+                if tok:
+                    items.append(tok)
+        elif wire == 0:
+            _, pos = _decode_varint(payload, pos)
+        elif wire == 1:
+            pos += 8
+        elif wire == 5:
+            pos += 4
+        else:
+            break
+    return banked_resets_record(items=items)
+
+
+def _fetch_remaining_resets(token: str) -> dict[str, Any]:
+    """GET remaining usage-limit resets. Empty protobuf request. Never redeems."""
+    body = bytes([0, 0, 0, 0, 0])  # grpc-web frame, empty proto message
+    req = urllib.request.Request(
+        REMAINING_RESETS_URL,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "content-type": "application/grpc-web+proto",
+            "x-grpc-web": "1",
+            "connect-protocol-version": "1",
+            "Accept": "application/grpc-web+proto",
+            "User-Agent": "hermes-submon/1.0",
+            "X-XAI-Token-Auth": "xai-grok-cli",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        raw = resp.read()
+    return parse_remaining_resets(raw)
 
 
 def _acp_request(method: str, params: Optional[dict] = None, timeout: float = ACP_TIMEOUT_S) -> dict[str, Any]:
@@ -345,6 +493,7 @@ def _from_override(ov: dict[str, Any]) -> dict:
         source="manual",
         notes=ov.get("notes") or "From manual_overrides.json",
         raw=ov,
+        banked_resets=ov.get("banked_resets") if isinstance(ov.get("banked_resets"), dict) else None,
     )
 
 
@@ -369,6 +518,7 @@ def collect() -> dict:
     errors: list[str] = []
     weekly_raw: Optional[dict] = None
     monthly_raw: Optional[dict] = None
+    banked: Optional[dict[str, Any]] = None
     plan = entry.get("subscription_tier") or "SuperGrok / Premium+"
 
     # 1) Weekly (ACP) first — this is the authoritative source AND triggers
@@ -402,6 +552,15 @@ def collect() -> dict:
     else:
         errors.append("monthly: no access token in auth.json")
 
+    # Banked usage-limit resets — awareness only (GetRemainingResets, never RedeemReset).
+    if token:
+        try:
+            banked = _fetch_remaining_resets(token)
+        except urllib.error.HTTPError as e:
+            errors.append(f"usage-resets HTTP {e.code}")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"usage-resets: {type(e).__name__}: {e}")
+
     windows: list[dict[str, Any]] = []
     if weekly_raw:
         windows.append(_window_weekly(weekly_raw))
@@ -425,6 +584,7 @@ def collect() -> dict:
             source="grok-cli",
             notes="; ".join(errors) or "no usage data",
             windows=[],
+            banked_resets=banked,
             raw={"errors": errors},
         )
 
@@ -443,9 +603,11 @@ def collect() -> dict:
         status="ok",
         source="grok-cli",
         notes=notes,
+        banked_resets=banked,
         raw={
             "weekly": weekly_raw,
             "monthly": monthly_raw,
+            "banked_resets": banked,
             "errors": errors,
             "collected_wall": iso(utcnow()),
         },

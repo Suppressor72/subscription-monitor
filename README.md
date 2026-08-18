@@ -12,8 +12,8 @@ Tracks (when credentials are available):
 |------|----------------|
 | **Cursor** | Monthly included / first-party / API pools |
 | **Z.ai Coding** | 5‑hour + monthly tools quotas |
-| **Grok / SuperGrok** | Weekly credits + monthly $ limit |
-| **ChatGPT · Codex** | Weekly (and 5‑hour when present) via Codex `wham/usage` |
+| **Grok / SuperGrok** | Weekly credits + monthly $ limit + banked usage-limit resets |
+| **ChatGPT · Codex** | Weekly (and 5‑hour when present) via Codex `wham/usage`; banked usage-limit resets |
 | **Antigravity · agy** | Shared **Gemini** and **Claude + GPT** WTUS pools (matches `agy` `/usage`) |
 | **Google AI Pro · Gemini** | Code Assist per‑model request fractions (not web chat, not Antigravity) |
 
@@ -27,6 +27,7 @@ Tracks (when credentials are available):
 - **Per-card red-zone banners** only (yellow does not spam)  
 - **Sparklines** — 48h usage trend with per-segment coloring (green/yellow/red by pace zone)  
 - **Reset countdowns** — `↻ 3d 7h` badge on each window (amber <6h, red <1h)  
+- **Banked usage-limit resets** — Grok and ChatGPT promotional resets (count + expiry); awareness only, no redeem from the dashboard
 - **Stale detection** — snapshot age &gt; 35 minutes → red badge + card chrome  
 - **Self-contained** — server owns its own collector (background thread every 30m); no cron or external scheduler needed  
 - **Optional auth** — `SUBMON_TOKEN` for LAN  
@@ -133,11 +134,11 @@ export CURSOR_SESSION_TOKEN='...'
 Requires: `pip install browser-cookie3` (listed in `requirements.txt`).
 
 ### Grok / SuperGrok
-Needs a working `grok` CLI login on the host (`~/.grok/auth.json`). Weekly via ACP billing; monthly $ via CLI chat-proxy billing.
+Needs a working `grok` CLI login on the host (`~/.grok/auth.json`). Weekly via ACP billing; monthly $ via CLI chat-proxy billing. Banked **usage-limit resets** (if xAI granted any) come from `GetRemainingResets` — count and expiry only.
 
 ### ChatGPT · Codex
 `codex login` (Sign in with ChatGPT) → `~/.codex/auth.json`.  
-Meters **Codex** usage (`chatgpt.com/backend-api/wham/usage`), **not** ChatGPT web message caps.
+Meters **Codex** usage (`chatgpt.com/backend-api/wham/usage`), **not** ChatGPT web message caps. Banked Codex resets from `wham/rate-limit-reset-credits` (count + `expires_at`). Neither card can redeem a reset from the dashboard.
 
 ### Google AI Pro · Code Assist (Gemini card)
 `gemini` CLI Google sign-in → `~/.gemini/oauth_creds.json`.  

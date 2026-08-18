@@ -250,6 +250,32 @@
       background: rgba(243, 18, 96, 0.15);
       color: var(--crit);
     }
+    .banked-resets {
+      margin: 0 0 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      line-height: 1.35;
+    }
+    .banked-resets.available,
+    .banked-resets.soon {
+      background: rgba(245, 165, 36, 0.15);
+      color: var(--warn);
+      font-weight: 600;
+    }
+    .banked-resets.none {
+      background: transparent;
+      border: 1px dashed var(--border);
+      color: var(--muted);
+      font-weight: 500;
+    }
+    .banked-resets .br-sub {
+      display: block;
+      font-weight: 500;
+      font-size: 0.75rem;
+      opacity: 0.9;
+      margin-top: 3px;
+    }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; }
     button {
       background: #1a2740; color: var(--text); border: 1px solid var(--border);
@@ -718,6 +744,31 @@
       return '';
     }
 
+    /** Banked promotional usage-limit resets (Grok / ChatGPT). Read-only. */
+    function bankedResetsHtml(p) {
+      const br = p && p.banked_resets;
+      if (!br || typeof br !== 'object') return '';
+      const n = Number(br.available_count);
+      if (!Number.isFinite(n)) return '';
+      if (n <= 0) {
+        return `<div class="banked-resets none">No usage-limit resets available</div>`;
+      }
+      const expMs = br.expires_at ? (Date.parse(br.expires_at) - Date.now()) : null;
+      const soon = expMs != null && expMs < 3 * 86400000;
+      const noun = n === 1 ? 'usage-limit reset' : 'usage-limit resets';
+      const exp = br.expires_at
+        ? ` · expires ${fmtWhen(br.expires_at)}${expMs != null ? ` (${fmtCountdown(expMs)})` : ''}`
+        : '';
+      const extras = (br.items || []).length > 1
+        ? `<span class="br-sub">${br.items.map(it => {
+            const when = it.expires_at ? fmtWhen(it.expires_at) : 'no expiry';
+            const title = it.title ? `${it.title} · ` : '';
+            return `${title}expires ${when}`;
+          }).join(' · ')}</span>`
+        : '';
+      return `<div class="banked-resets ${soon ? 'soon' : 'available'}" title="Promotional reset — redeem in the vendor UI, not here">${n} ${noun} available${exp}${extras}</div>`;
+    }
+
     /**
      * Color for a point based on pace zone (same rule as pace bar).
      * Green ≤ even-pace, yellow ahead, red ≥ pace+10pp.
@@ -898,6 +949,7 @@
             <span class="badge ${ds.key}" title="${ds.reason || ds.label}">${ds.label}</span>
           </h2>
           <div class="plan">${p.plan || ''} · source: ${p.source || '?'}${collectedLine}</div>
+          ${bankedResetsHtml(p)}
           ${banner}
           ${winsHtml}
           ${p.notes ? `<div class="notes">${p.notes}</div>` : ''}

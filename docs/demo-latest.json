@@ -71,6 +71,17 @@
       "source": "demo",
       "collected_at": "2026-07-21T18:00:00+00:00",
       "notes": "Demo data — illustrative only",
+      "banked_resets": {
+        "available_count": 1,
+        "expires_at": "2026-09-12T18:49:00+00:00",
+        "items": [
+          {
+            "status": "available",
+            "granted_at": "2026-08-12T18:49:00+00:00",
+            "expires_at": "2026-09-12T18:49:00+00:00"
+          }
+        ]
+      },
       "windows": [
         {
           "name": "Weekly Quota",
@@ -101,6 +112,11 @@
       "source": "demo",
       "collected_at": "2026-07-21T18:00:00+00:00",
       "notes": "Demo data — Codex quota only, not web chat caps",
+      "banked_resets": {
+        "available_count": 0,
+        "expires_at": null,
+        "items": []
+      },
       "windows": [
         {
           "name": "Weekly Quota",

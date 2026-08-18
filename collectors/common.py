@@ -368,6 +368,81 @@ def cycle_fraction(
     return max(0.0, min(1.0, frac))
 
 
+def _parse_iso_dt(value: Any) -> Optional[datetime]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def banked_resets_record(
+    *,
+    available_count: Optional[int] = None,
+    items: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    """Public summary of promotional usage-limit resets (not redeemable from the UI).
+
+    Omits vendor token/credit IDs. ``available_count`` is authoritative when
+    the API sends one; otherwise it is the number of remaining items.
+    ``expires_at`` is the soonest expiry among those items.
+    """
+    public_items: list[dict[str, Any]] = []
+    soonest: Optional[datetime] = None
+    now = utcnow()
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        status = str(it.get("status") or "available").lower()
+        if status and status not in ("available", "ready", "active"):
+            continue
+        exp_dt = _parse_iso_dt(it.get("expires_at") or it.get("validity_end"))
+        if exp_dt is not None and exp_dt <= now:
+            continue
+        rec: dict[str, Any] = {
+            "status": "available",
+            "granted_at": None,
+            "expires_at": iso(exp_dt) if exp_dt else None,
+        }
+        granted = _parse_iso_dt(it.get("granted_at") or it.get("validity_start"))
+        if granted is not None:
+            rec["granted_at"] = iso(granted)
+        title = it.get("title")
+        if isinstance(title, str) and title.strip():
+            rec["title"] = title.strip()
+        public_items.append(rec)
+        if exp_dt is not None and (soonest is None or exp_dt < soonest):
+            soonest = exp_dt
+
+    if available_count is None:
+        count = len(public_items)
+    else:
+        try:
+            count = max(0, int(available_count))
+        except (TypeError, ValueError):
+            count = len(public_items)
+
+    return {
+        "available_count": count,
+        "expires_at": iso(soonest) if soonest else None,
+        "items": public_items,
+    }
+
+
 def provider_record(
     provider: str,
     *,
@@ -377,8 +452,9 @@ def provider_record(
     notes: Optional[str] = None,
     source: str = "api",
     raw: Any = None,
+    banked_resets: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    return {
+    rec = {
         "provider": provider,
         "plan": plan,
         "status": status,  # ok | error | stub | login_required
@@ -389,6 +465,9 @@ def provider_record(
         # Kept in-memory only; stripped before write_snapshot
         "raw": raw,
     }
+    if banked_resets is not None:
+        rec["banked_resets"] = banked_resets
+    return rec
 
 
 def _public_provider(p: dict[str, Any]) -> dict[str, Any]:

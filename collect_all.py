@@ -37,6 +37,11 @@ def main() -> int:
             f"{w.get('name')}={w.get('pct_used')}%" for w in wins
         ) or p.get("status")
         print(f"  {name}: {p.get('status')} | {summary}")
+        br = p.get("banked_resets") or {}
+        if br.get("available_count") is not None:
+            n = br.get("available_count")
+            exp = br.get("expires_at") or "no expiry"
+            print(f"    banked resets: {n} (expires {exp})")
     if snap.get("alerts"):
         print("alerts:")
         for a in snap["alerts"]:

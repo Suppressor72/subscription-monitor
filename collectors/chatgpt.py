@@ -9,6 +9,11 @@ Endpoints (verified 2026-07-21):
 This is the **Codex** rate-limit pool included with Plus (weekly + optional 5h
 secondary), NOT ChatGPT web message caps (those need a chatgpt.com browser
 session and are still manual / future).
+
+Banked usage-limit resets (read-only):
+  GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits
+  plus ``rate_limit_reset_credits.available_count`` on the usage payload.
+  The dashboard never calls the consume/redeem endpoint.
 """
 from __future__ import annotations
 
@@ -23,6 +28,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from collectors.common import (
+    banked_resets_record,
     cycle_fraction,
     iso,
     pace_status,
@@ -34,6 +40,7 @@ from collectors.common import (
 CODEX_HOME = Path.home() / ".codex"
 AUTH_PATH = CODEX_HOME / "auth.json"
 WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
 SUBSCRIPTIONS_URL = "https://chatgpt.com/backend-api/subscriptions"
 TOKEN_URL = "https://auth.openai.com/oauth/token"
 # Public Codex / ChatGPT OAuth client (same family as CLI login)
@@ -285,6 +292,34 @@ def _windows_from_usage(usage: dict[str, Any]) -> list[dict[str, Any]]:
     return windows
 
 
+def _banked_from_credits(blob: Optional[dict], usage: Optional[dict] = None) -> dict[str, Any]:
+    """Normalize WHAM reset-credit list + usage summary. No IDs in the result."""
+    summary = (usage or {}).get("rate_limit_reset_credits") or {}
+    count = None
+    if isinstance(blob, dict) and blob.get("available_count") is not None:
+        count = blob.get("available_count")
+    elif summary.get("available_count") is not None:
+        count = summary.get("available_count")
+    elif summary.get("applicable_available_count") is not None:
+        count = summary.get("applicable_available_count")
+
+    items: list[dict[str, Any]] = []
+    raw_items = (blob or {}).get("credits") if isinstance(blob, dict) else None
+    if isinstance(raw_items, list):
+        for c in raw_items:
+            if not isinstance(c, dict):
+                continue
+            items.append(
+                {
+                    "status": c.get("status") or "available",
+                    "granted_at": c.get("granted_at"),
+                    "expires_at": c.get("expires_at"),
+                    "title": c.get("title"),
+                }
+            )
+    return banked_resets_record(available_count=count, items=items)
+
+
 def _from_override(ov: dict[str, Any]) -> dict:
     windows_in = ov.get("windows") or []
     windows = []
@@ -332,6 +367,7 @@ def _from_override(ov: dict[str, Any]) -> dict:
                 "pace": "unknown",
             }
         ]
+    br = ov.get("banked_resets")
     return provider_record(
         "chatgpt",
         plan=ov.get("plan") or "Plus",
@@ -340,6 +376,7 @@ def _from_override(ov: dict[str, Any]) -> dict:
         source="manual",
         notes=ov.get("notes") or "From manual_overrides.json",
         raw=ov,
+        banked_resets=br if isinstance(br, dict) else None,
     )
 
 
@@ -379,6 +416,7 @@ def collect() -> dict:
     errors: list[str] = []
     usage: Optional[dict] = None
     sub: Optional[dict] = None
+    reset_credits: Optional[dict] = None
 
     try:
         usage = _get_json(WHAM_USAGE_URL, headers)
@@ -423,6 +461,12 @@ def collect() -> dict:
     except Exception as e:  # noqa: BLE001
         errors.append(f"subscriptions: {type(e).__name__}: {e}")
 
+    # Banked usage-limit resets (list only — never consume/redeem).
+    try:
+        reset_credits = _get_json(RESET_CREDITS_URL, headers)
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"reset-credits: {type(e).__name__}: {e}")
+
     if not usage:
         if ov:
             rec = _from_override(ov)
@@ -448,6 +492,7 @@ def collect() -> dict:
         plan_label += f" · until {str(sub['active_until'])[:10]}"
 
     windows = _windows_from_usage(usage)
+    banked = _banked_from_credits(reset_credits, usage)
     rl = usage.get("rate_limit") or {}
     notes = (
         "Live Codex quota via chatgpt.com/backend-api/wham/usage "
@@ -469,9 +514,11 @@ def collect() -> dict:
         status="ok",
         source="codex",
         notes=notes,
+        banked_resets=banked,
         raw={
             "usage": usage,
             "subscription": sub,
+            "reset_credits": reset_credits,
             "errors": errors,
             "email": usage.get("email"),
         },
