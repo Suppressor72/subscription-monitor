@@ -11,7 +11,7 @@ Tracks (when credentials are available):
 | Card | What it meters |
 |------|----------------|
 | **Cursor** | Monthly included / first-party / API pools |
-| **Z.ai Coding** | 5‑hour + monthly tools quotas |
+| **Z.ai Coding** | 5‑hour + monthly tools quotas; banked usage‑limit resets |
 | **Grok / SuperGrok** | Weekly credits + monthly $ limit + banked usage-limit resets |
 | **ChatGPT · Codex** | Weekly (and 5‑hour when present) via Codex `wham/usage`; banked usage-limit resets |
 | **Antigravity · agy** | Shared **Gemini** and **Claude + GPT** WTUS pools (matches `agy` `/usage`) |
@@ -27,7 +27,7 @@ Tracks (when credentials are available):
 - **Per-card red-zone banners** only (yellow does not spam)  
 - **Sparklines** — 48h usage trend with per-segment coloring (green/yellow/red by pace zone)  
 - **Reset countdowns** — `↻ 3d 7h` badge on each window (amber <6h, red <1h)  
-- **Banked usage-limit resets** — Grok and ChatGPT promotional resets (count + expiry); awareness only, no redeem from the dashboard
+- **Banked usage-limit resets** — Grok, ChatGPT, and Z.ai promotional resets (count + expiry); awareness only, no redeem from the dashboard
 - **Stale detection** — snapshot age &gt; 35 minutes → red badge + card chrome  
 - **Self-contained** — server owns its own collector (background thread every 30m); no cron or external scheduler needed  
 - **Optional auth** — `SUBMON_TOKEN` for LAN  
@@ -120,6 +120,12 @@ Collectors fail soft: missing login → `login_required` / notes on the card. Wi
 
 ### Z.ai Coding Plan
 Set `GLM_API_KEY` or `ZAI_API_KEY` in `.env` (or process env). Uses the official quota API.
+Banked **usage-limit resets** (if Z.ai granted any) come from the ZCode CLI login:
+sign in to Z.ai in [ZCode](https://z.ai) once on this host — the collector reads
+`~/.zcode/v2/credentials.json` (AES‑256‑GCM `enc:v1:` blobs; key from `ZCODE_CREDENTIAL_SECRET`
+or the CLI's default derivation) and calls the read‑only
+`zcode.z.ai/api/v1/coding-plan/reset/status`. It never calls the redeem endpoints
+(`/reset/use`, `/reset/opportunity`).
 
 ### Cursor
 Prefer staying logged into [cursor.com](https://cursor.com) in Chrome; the collector reads `WorkosCursorSessionToken` via `browser-cookie3`.

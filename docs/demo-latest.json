@@ -10,7 +10,7 @@
       "plan": "Pro",
       "source": "demo",
       "collected_at": "2026-07-21T18:00:00+00:00",
-      "notes": "Demo data — illustrative only",
+      "notes": "Demo data \u2014 illustrative only",
       "windows": [
         {
           "name": "Monthly Quota",
@@ -44,7 +44,7 @@
       "plan": "GLM Coding Plan (Pro)",
       "source": "demo",
       "collected_at": "2026-07-21T18:00:00+00:00",
-      "notes": "Demo data — illustrative only",
+      "notes": "Demo data \u2014 illustrative only",
       "windows": [
         {
           "name": "5 Hour Quota",
@@ -62,7 +62,19 @@
           "pace": "behind",
           "resets_at": "2026-08-01T00:00:00+00:00"
         }
-      ]
+      ],
+      "banked_resets": {
+        "available_count": 1,
+        "expires_at": "2026-08-22T02:58:05+00:00",
+        "items": [
+          {
+            "status": "available",
+            "granted_at": null,
+            "expires_at": "2026-08-22T02:58:05+00:00",
+            "title": "5-hour reset"
+          }
+        ]
+      }
     },
     "grok": {
       "provider": "grok",
@@ -70,7 +82,7 @@
       "plan": "SuperGrok",
       "source": "demo",
       "collected_at": "2026-07-21T18:00:00+00:00",
-      "notes": "Demo data — illustrative only",
+      "notes": "Demo data \u2014 illustrative only",
       "banked_resets": {
         "available_count": 1,
         "expires_at": "2026-09-12T18:49:00+00:00",
@@ -111,7 +123,7 @@
       "plan": "ChatGPT Plus",
       "source": "demo",
       "collected_at": "2026-07-21T18:00:00+00:00",
-      "notes": "Demo data — Codex quota only, not web chat caps",
+      "notes": "Demo data \u2014 Codex quota only, not web chat caps",
       "banked_resets": {
         "available_count": 0,
         "expires_at": null,
@@ -134,10 +146,10 @@
       "plan": "Antigravity",
       "source": "demo",
       "collected_at": "2026-07-21T18:00:00+00:00",
-      "notes": "Demo data — shared pools like agy /usage",
+      "notes": "Demo data \u2014 shared pools like agy /usage",
       "windows": [
         {
-          "name": "Gemini · 5 Hour Quota",
+          "name": "Gemini \u00b7 5 Hour Quota",
           "kind": "rolling_5h",
           "pct_used": 64.0,
           "pct_time_elapsed": 30.0,
@@ -145,7 +157,7 @@
           "resets_at": "2026-07-21T20:30:00+00:00"
         },
         {
-          "name": "Claude + GPT · 5 Hour Quota",
+          "name": "Claude + GPT \u00b7 5 Hour Quota",
           "kind": "rolling_5h",
           "pct_used": 5.0,
           "pct_time_elapsed": 30.0,
@@ -160,7 +172,7 @@
       "plan": "Google One AI Pro",
       "source": "demo",
       "collected_at": "2026-07-21T18:00:00+00:00",
-      "notes": "Demo data — Code Assist request fractions",
+      "notes": "Demo data \u2014 Code Assist request fractions",
       "windows": [
         {
           "name": "Pro Latest",
@@ -191,13 +203,13 @@
       "level": "warn",
       "provider": "grok",
       "window": "Weekly Quota",
-      "message": "Weekly Quota in red — 72% used (red ≥ 45% = even-pace + 10pp)"
+      "message": "Weekly Quota in red \u2014 72% used (red \u2265 45% = even-pace + 10pp)"
     },
     {
       "level": "warn",
       "provider": "antigravity",
-      "window": "Gemini · 5 Hour Quota",
-      "message": "Gemini · 5 Hour Quota in red — 64% used (red ≥ 40% = even-pace + 10pp)"
+      "window": "Gemini \u00b7 5 Hour Quota",
+      "message": "Gemini \u00b7 5 Hour Quota in red \u2014 64% used (red \u2265 40% = even-pace + 10pp)"
     }
   ]
 }

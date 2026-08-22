@@ -1,16 +1,37 @@
-"""Z.ai GLM Coding Plan usage via official monitor API."""
+"""Z.ai GLM Coding Plan usage via official monitor API.
+
+Banked usage-limit resets (read-only awareness):
+  GET https://zcode.z.ai/api/v1/coding-plan/reset/status
+  Auth = ZCode CLI credentials (~/.zcode/v2/credentials.json): the
+  `zcodejwttoken` (Authorization) + `oauth:zai:access_token`
+  (X-Bigmodel-Authorization) pair the CLI itself uses. Values are
+  AES-256-GCM encrypted at rest (enc:v1:); the key is derived from
+  ZCODE_CREDENTIAL_SECRET or the CLI's deterministic fallback.
+  Never calls /reset/use or /reset/opportunity (those mutate state).
+"""
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import os
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
-from typing import Any
+from pathlib import Path
+from typing import Any, Optional
 
-from collectors.common import iso, load_env_key, pace_status, provider_record
+from collectors.common import (
+    banked_resets_record,
+    iso,
+    load_env_key,
+    pace_status,
+    provider_record,
+)
 
 
 ENDPOINT = "https://api.z.ai/api/monitor/usage/quota/limit"
+RESET_STATUS_URL = "https://zcode.z.ai/api/v1/coding-plan/reset/status"
 
 
 def _ms_to_iso(ms: Any) -> str | None:
@@ -65,14 +86,160 @@ def _label_for_kind(kind: str, lim: dict) -> str:
     return f"{t} ({lim.get('number')}×{lim.get('unit')})"
 
 
+def _zcode_credentials_path() -> Path:
+    if os.environ.get("ZCODE_CREDENTIALS"):
+        return Path(os.environ["ZCODE_CREDENTIALS"]).expanduser()
+    if os.environ.get("ZCODE_HOME"):
+        return Path(os.environ["ZCODE_HOME"]).expanduser() / "v2" / "credentials.json"
+    return Path.home() / ".zcode" / "v2" / "credentials.json"
+
+
+def _node_platform() -> str:
+    # Mirror Node os.platform() (used by ZCode's fallback secret).
+    import sys
+
+    if sys.platform.startswith("win"):
+        return "win32"
+    if sys.platform.startswith("darwin"):
+        return "darwin"
+    return sys.platform or "linux"
+
+
+def _zcode_secret(env: dict) -> str:
+    if env.get("ZCODE_CREDENTIAL_SECRET"):
+        return env["ZCODE_CREDENTIAL_SECRET"]
+    username = "unknown"
+    try:
+        import pwd
+
+        username = pwd.getpwuid(os.getuid()).pw_name
+    except (ImportError, KeyError, AttributeError):
+        username = env.get("USER") or env.get("USERNAME") or username
+    return f"zcode-credential-fallback:{_node_platform()}:{Path.home()}:{username}"
+
+
+def _decrypt_enc_v1(value: str, env: dict) -> Optional[str]:
+    """Decrypt ZCode's `enc:v1:<iv>.<tag>.<ct>` AES-256-GCM credential blob."""
+    if not value.startswith("enc:v1:"):
+        return value
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError:
+        raise RuntimeError("cryptography package required for ZCode credentials")
+    parts = value[len("enc:v1:") :].split(".")
+    if len(parts) != 3:
+        return None
+
+    def _b64u(s: str) -> bytes:
+        return base64.urlsafe_b64decode(s + "=" * ((4 - len(s) % 4) % 4))
+
+    key = hashlib.sha256(_zcode_secret(env).encode()).digest()
+    try:
+        iv, tag, ct = (_b64u(p) for p in parts)
+        return AESGCM(key).decrypt(iv, ct + tag, None).decode()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _load_zcode_auth() -> tuple[Optional[str], Optional[str]]:
+    """(zcode_jwt, coding_plan_token) from ZCode CLI credential storage."""
+    path = _zcode_credentials_path()
+    if not path.exists():
+        return None, None
+    try:
+        creds = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    env = dict(os.environ)
+    jwt = _decrypt_enc_v1(creds.get("zcodejwttoken") or "", env)
+    maas = _decrypt_enc_v1(
+        creds.get("oauth:zai:access_token")
+        or creds.get("oauth:bigmodel:access_token")
+        or "",
+        env,
+    )
+    jwt = jwt.strip() if jwt and jwt.strip() else None
+    maas = maas.strip() if maas and maas.strip() else None
+    return jwt, maas
+
+
+def _fetch_banked_resets() -> dict:
+    """GET coding-plan reset status (read-only). Raises with a user-facing note."""
+    jwt, maas = _load_zcode_auth()
+    if not jwt or not maas:
+        raise RuntimeError(
+            "no ZCode credentials (~/.zcode/v2/credentials.json) — sign in to Z.ai in ZCode"
+        )
+    headers = {
+        "Authorization": jwt if jwt.startswith("Bearer ") else f"Bearer {jwt}",
+        "X-Bigmodel-Authorization": maas,
+        "Bigmodel-Target-Type": os.environ.get("ZCODE_TARGET_TYPE", "PERSONAL"),
+        "Accept": "application/json",
+    }
+    if os.environ.get("ZCODE_ORGANIZATION_ID"):
+        headers["Bigmodel-Target-Type"] = "TEAM"
+        headers["Bigmodel-Organization"] = os.environ["ZCODE_ORGANIZATION_ID"]
+        if os.environ.get("ZCODE_PROJECT_ID"):
+            headers["Bigmodel-Project"] = os.environ["ZCODE_PROJECT_ID"]
+    req = urllib.request.Request(RESET_STATUS_URL, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode(errors="replace")[:120]
+        except Exception:  # noqa: BLE001
+            pass
+        if e.code == 401:
+            raise RuntimeError("reset status HTTP 401 — re-login to Z.ai in ZCode")
+        raise RuntimeError(f"reset status HTTP {e.code}{(' ' + detail) if detail else ''}")
+    data = body.get("data") or {}
+    if body.get("code") not in (0, 200):
+        raise RuntimeError(f"reset status code={body.get('code')} {body.get('msg')}")
+
+    items: list[dict] = []
+    for entry in data.get("available_five_hour_resets") or []:
+        items.append(
+            {
+                "status": "available",
+                "expires_at": _ms_to_iso(entry.get("expire_at")),
+                "title": "5-hour reset",
+            }
+        )
+    for entry in data.get("available_week_resets") or []:
+        items.append(
+            {
+                "status": "available",
+                "expires_at": _ms_to_iso(entry.get("expire_at")),
+                "title": "Weekly reset",
+            }
+        )
+    return banked_resets_record(items=items)
+
+
 def collect() -> dict:
     key = load_env_key("GLM_API_KEY", "ZAI_API_KEY", "ZHIPU_API_KEY", "ZHIPUAI_API_KEY")
+
+    # Banked usage-limit resets are independent of the quota API key:
+    # they authenticate with the ZCode CLI login, fail soft either way.
+    banked: Optional[dict] = None
+    banked_err: Optional[str] = None
+    try:
+        banked = _fetch_banked_resets()
+    except Exception as e:  # noqa: BLE001
+        banked_err = str(e)
+
     if not key:
+        notes = "No GLM_API_KEY / ZAI_API_KEY in env or .env"
+        if banked_err:
+            notes += f" | {banked_err}"
         return provider_record(
             "zai",
             status="error",
-            notes="No GLM_API_KEY / ZAI_API_KEY in env or .env",
+            notes=notes,
             source="api",
+            banked_resets=banked,
         )
     req = urllib.request.Request(
         ENDPOINT,
@@ -82,18 +249,26 @@ def collect() -> dict:
         with urllib.request.urlopen(req, timeout=25) as resp:
             body = json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
+        notes = f"HTTP {e.code}: {e.reason}"
+        if banked_err:
+            notes += f" | {banked_err}"
         return provider_record(
             "zai",
             status="error",
-            notes=f"HTTP {e.code}: {e.reason}",
+            notes=notes,
             source="api",
+            banked_resets=banked,
         )
     except Exception as e:  # noqa: BLE001
+        notes = f"{type(e).__name__}: {e}"
+        if banked_err:
+            notes += f" | {banked_err}"
         return provider_record(
             "zai",
             status="error",
-            notes=f"{type(e).__name__}: {e}",
+            notes=notes,
             source="api",
+            banked_resets=banked,
         )
 
     data = body.get("data") or {}
@@ -149,13 +324,18 @@ def collect() -> dict:
     order = {"five_hour": 0, "monthly_tools": 1, "other": 9}
     windows.sort(key=lambda w: order.get(w.get("kind") or "other", 9))
 
+    notes = "Official Z.ai quota API — labels mapped to coding-plan Usage UI"
+    if banked_err:
+        notes += f" | {banked_err}"
+
     return provider_record(
         "zai",
         plan=f"GLM Coding Plan ({str(plan).title()})" if plan else "GLM Coding Plan",
         windows=windows,
         status="ok",
-        notes="Official Z.ai quota API — labels mapped to coding-plan Usage UI",
+        notes=notes,
         source="api",
+        banked_resets=banked,
         raw={"code": body.get("code"), "limits": data.get("limits")},
     )
 

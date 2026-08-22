@@ -4,3 +4,5 @@ uvicorn[standard]>=0.27
 browser-cookie3>=0.19
 # Antigravity: agy CLI OAuth token from GNOME keyring
 keyring>=25.0
+# Z.ai: decrypt ZCode CLI credentials for usage-limit reset status
+cryptography>=42.0
